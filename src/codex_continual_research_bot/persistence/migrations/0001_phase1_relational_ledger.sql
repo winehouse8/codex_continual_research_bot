@@ -12,7 +12,7 @@ CREATE TABLE queue_items (
     topic_id TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
     kind TEXT NOT NULL,
     state TEXT NOT NULL,
-    run_id TEXT NOT NULL,
+    requested_run_id TEXT NOT NULL,
     dedupe_key TEXT NOT NULL UNIQUE,
     idempotency_key TEXT NOT NULL UNIQUE,
     priority INTEGER NOT NULL,

@@ -3,7 +3,7 @@
   "kind": "run.execute",
   "state": "queued",
   "topic_id": "topic_codex_auth_boundary",
-  "run_id": "run_2026_04_19_001",
+  "requested_run_id": "seed_run_2026_04_19_001",
   "dedupe_key": "run.execute:topic_codex_auth_boundary:2026-04-19",
   "idempotency_key": "run.execute:run_2026_04_19_001:v1",
   "priority": 50,

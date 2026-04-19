@@ -5,12 +5,19 @@
 ## Tables
 
 - `topics`: topic metadata anchor for queue, run, and scheduler rows.
-- `queue_items`: retryable execution queue with claim state, failure bookkeeping, and dedupe/idempotency keys.
+- `queue_items`: retryable execution queue with claim state, failure bookkeeping, dedupe/idempotency keys, and a non-authoritative `requested_run_id` captured at enqueue time.
 - `idempotency_keys`: write ledger that rejects duplicate execution keys at the database boundary.
 - `runs`: one run row per claimed queue item, linked to the queue item and idempotency key.
 - `run_events`: append-only runtime event ledger guarded by `UPDATE`/`DELETE` denial triggers.
 - `session_ledger`, `session_leases`, `session_events`: session authority, active lease tracking, and append-only session audit trail.
 - `scheduler_policies`: per-topic scheduler policy state.
+
+## Run Linkage Semantics
+
+- `queue_items.requested_run_id` is a seed/request identifier from enqueue time. It is not the authoritative execution record and it does not change during claim.
+- `runs.id` is the authoritative run identifier created inside `claim_next_queue_item_for_run(...)`.
+- `runs.queue_item_id` is the canonical audit join from a queue row to the actual claimed run row.
+- `idempotency_keys.run_id` is filled only when the queue item is claimed and must match `runs.id`.
 
 ## Transaction Boundary
 
@@ -33,6 +40,7 @@ Phase 1 tests specifically guard:
 - duplicate idempotency rejection
 - append-only event immutability
 - concurrent queue claim races
+- queue seed identifier versus authoritative run linkage
 - retry counter updates
 - stale lease cleanup
 - rollback of partial queue-claim transactions

@@ -34,7 +34,7 @@ def make_queue_job(*, queue_item_id: str = "queue_001", idempotency_key: str = "
             "kind": "run.execute",
             "state": "queued",
             "topic_id": "topic_001",
-            "run_id": f"seed_{queue_item_id}",
+            "requested_run_id": f"seed_{queue_item_id}",
             "dedupe_key": f"dedupe_{queue_item_id}",
             "idempotency_key": idempotency_key,
             "priority": 10,
@@ -237,6 +237,35 @@ def test_claim_links_idempotency_record_to_run(tmp_path: Path) -> None:
     idempotency_record = ledger.get_idempotency_record("idem_001")
     assert idempotency_record is not None
     assert idempotency_record["run_id"] == "run_001"
+
+
+def test_queue_requested_run_id_is_not_the_authoritative_run_id(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    ledger.reserve_idempotency_key(
+        idempotency_key="idem_001",
+        scope="run.execute",
+        request_digest="sha256:queue_001",
+    )
+    ledger.enqueue_job(make_queue_job())
+
+    claimed = ledger.claim_next_queue_item_for_run(
+        worker_id="worker-a",
+        run_id="run_001",
+        mode="scheduled",
+    )
+
+    assert claimed is not None
+    queue_row = ledger.fetch_queue_item("queue_001")
+    run_row = ledger.fetch_run("run_001")
+    idempotency_record = ledger.get_idempotency_record("idem_001")
+
+    assert queue_row is not None
+    assert run_row is not None
+    assert idempotency_record is not None
+    assert queue_row["requested_run_id"] == "seed_queue_001"
+    assert run_row["id"] == "run_001"
+    assert run_row["queue_item_id"] == queue_row["id"]
+    assert idempotency_record["run_id"] == run_row["id"]
 
 
 def test_queue_retry_counter_update(tmp_path: Path) -> None:
