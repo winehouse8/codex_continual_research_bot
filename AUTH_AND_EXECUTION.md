@@ -91,6 +91,23 @@ flowchart LR
 - `Execution Adapter`: run 시점에 특정 principal session을 attach
 - `Codex CLI Runtime`: 실제 Codex execution surface
 
+### 5.1 Verification Surfaces
+
+principal/workspace/session verification은 단일 파일이나 단일 명령으로 닫히지 않는다.
+v1은 아래 세 가지 신호를 조합한다.
+
+| Purpose | Primary source | Why |
+| --- | --- | --- |
+| principal 확인 | loopback `codex app-server`의 `account/read` | `email`, `type`, `planType`, `requiresOpenaiAuth`를 공식 schema로 확인 가능 |
+| workspace restriction 확인 | `config/read` 또는 session 전용 `config.toml` | `forced_login_method`, `forced_chatgpt_workspace_id`, project trust policy는 config가 authority다 |
+| session continuity 확인 | `~/.codex/auth.json`, `codex login status` | `auth_mode`, `last_refresh`, token presence, ChatGPT login 상태를 확인 가능 |
+
+핵심 판단:
+
+- `auth.json`만으로는 principal을 새로 증명할 수 없다.
+- `auth.json`은 continuity signal이지 identity proof가 아니다.
+- principal fingerprint는 bootstrap 시점에 `account/read`로 먼저 확정하고, 이후 `auth.json`은 그 fingerprint가 유지되는 session인지 확인하는 보조 신호로만 쓴다.
+
 ## 6. Principal And Session Model
 
 ### 6.1 Principal Types
@@ -105,6 +122,25 @@ flowchart LR
 - `leased_execution_session`: interactive bootstrap 이후 scheduler가 재사용하는 session
 - `renewal_session`: re-auth 또는 device-auth 복구 중인 임시 상태
 - `revoked_session`: 더 이상 실행에 사용 불가한 상태
+
+### 6.3 Principal Fingerprint
+
+v1 principal fingerprint는 아래 canonical string의 SHA-256으로 정의한다.
+
+```text
+lowercase(account.email) + "|" + account.type + "|" + (forced_chatgpt_workspace_id or "-")
+```
+
+여기서:
+
+- `account.email`, `account.type`은 `account/read` 응답에서 읽는다.
+- `forced_chatgpt_workspace_id`는 app-server `config/read` 또는 session 전용 `config.toml`에서 읽는다.
+- `planType`은 audit metadata로 저장하지만 identity key에는 넣지 않는다. plan 변경이 principal mismatch로 오인되면 안 되기 때문이다.
+
+결과적으로:
+
+- ChatGPT principal mismatch는 `email` 또는 configured workspace restriction이 달라질 때 발생한다.
+- same-user plan 변경은 mismatch가 아니라 metadata update다.
 
 ## 7. Adapter Contracts
 
@@ -161,6 +197,8 @@ ExecutionProvider.healthcheck(lease_id) -> LeaseHealth
 - 이 경로는 private trusted host에서만 허용한다.
 - auth.json은 password 수준의 secret으로 취급한다.
 - application DB나 general blob store에 저장하지 않는다.
+- copied `auth.json`만으로는 새로운 principal verification을 완료한 것으로 간주하지 않는다.
+- copied `auth.json`은 기존에 검증된 session fingerprint를 이어받는 continuity recovery로만 허용한다.
 
 ## 9. Session Ledger Schema
 
@@ -174,8 +212,11 @@ DB에는 raw token이 아니라 아래 metadata만 저장한다.
 | `host_id` | text | trusted runtime host |
 | `credential_locator` | text | secret path or keyring locator |
 | `state` | text | `bootstrapping`, `active`, `refreshing`, `expired`, `reauth_required`, `revoked` |
-| `workspace_id` | text nullable | if workspace restriction applies |
-| `account_fingerprint` | text | non-secret identifier for mismatch detection |
+| `workspace_id` | text nullable | expected ChatGPT workspace restriction from config, not inferred from `auth.json` |
+| `workspace_root` | text | absolute repo/worktree root this session is allowed to run against |
+| `account_fingerprint` | text | `sha256(lower(email)|type|workspace_id_or_dash)` |
+| `plan_type` | text nullable | audit metadata from `account/read` |
+| `verification_level` | text | `account-read+config-read` or `auth-json-continuity-only` |
 | `last_validated_at` | timestamptz | last successful inspect |
 | `last_refreshed_at` | timestamptz nullable | best effort metadata |
 | `lease_count` | int | concurrent lease guard |
@@ -191,7 +232,67 @@ DB에는 raw token이 아니라 아래 metadata만 저장한다.
 - `session_events`
 - `session_host_bindings`
 
-## 10. Session State Machine
+## 10. Verification Mechanism
+
+### 10.1 Source Of Truth Per Check
+
+각 검증 항목의 authoritative source는 아래와 같다.
+
+| Check | Source | Accept / reject rule |
+| --- | --- | --- |
+| login method | `codex login status`, `auth.json.auth_mode`, config `forced_login_method` | `chatgpt`가 아니면 reject |
+| principal identity | app-server `account/read.account.email` + `type` | fingerprint mismatch면 reject |
+| workspace restriction | config `forced_chatgpt_workspace_id` | expected value와 다르거나 missing인데 required면 reject |
+| workspace root | session ledger `workspace_root`, local `config.toml [projects.\"<abs_path>\"]`, runtime `cwd` | exact absolute path mismatch면 reject |
+| session freshness | `auth.json.last_refresh`, token presence, run-start healthcheck | stale or missing refresh metadata면 reauth 또는 refresh path |
+
+### 10.2 Concrete Inspect Algorithm
+
+`SessionManager.inspect(session_handle)`는 아래 순서를 강제한다.
+
+1. `codex login status`가 `Logged in using ChatGPT`를 반환하는지 확인한다.
+2. `auth.json`을 읽어 `auth_mode == "chatgpt"`, `last_refresh != null`, `tokens.access_token`, `tokens.id_token`, `tokens.refresh_token` 존재 여부를 확인한다.
+3. loopback `codex app-server`를 띄우고 `account/read`를 호출해 `{ account.email, account.type, planType, requiresOpenaiAuth }`를 읽는다.
+4. same app-server connection에서 `config/read`를 호출해 `forced_login_method`, `forced_chatgpt_workspace_id`를 읽는다.
+5. session ledger의 expected fingerprint와 `sha256(lower(email)|type|workspace_id_or_dash)`를 비교한다.
+6. ledger의 `workspace_root`와 실제 실행하려는 absolute `cwd`가 일치하는지 확인한다.
+7. session 전용 `config.toml`에서 `[projects."<workspace_root>"].trust_level = "trusted"`가 있는지 확인한다.
+8. 위 조건 중 하나라도 실패하면 lease를 발급하지 않고 fail closed 한다.
+
+### 10.3 Why App Server Is Mandatory For Identity Establishment
+
+현재 확인된 실제 인터페이스 기준:
+
+- local `codex login status`는 login method만 알려준다.
+- local `auth.json` 샘플에는 `auth_mode`, `last_refresh`, `tokens`, `OPENAI_API_KEY`만 있고 email/workspace metadata가 없다.
+- app-server protocol schema에는 `account/read`와 `config/read`가 존재하고, `account/read` 응답은 ChatGPT mode에서 `email`, `planType`, `type`을 포함한다.
+
+따라서 v1 정책은 아래와 같다.
+
+- `account/read` 성공 없이 새로운 principal bootstrap을 `active`로 승격하지 않는다.
+- `auth.json`만 있는 imported session은 기존 fingerprint continuity 확인 전까지 `renewal_session`으로 유지한다.
+
+### 10.4 Auth.json Fallback Policy
+
+`auth.json` fallback에서 가능한 것:
+
+- managed ChatGPT session이 존재하는지 확인
+- 최근 refresh가 있었는지 확인
+- access/id/refresh token material이 남아 있는지 확인
+
+`auth.json` fallback에서 불가능한 것:
+
+- 새 principal의 email을 authoritative하게 확정
+- configured workspace restriction을 파일만으로 복구
+- 다른 사용자의 auth cache가 복사되었는지 단독으로 판별
+
+따라서 `auth.json` fallback은 동일 검증을 `완전히` 대체하지 못한다.
+대신 아래 제한된 용도로만 허용한다.
+
+- 이미 bootstrap 때 검증된 principal을 동일 trusted host pool에서 이어받는 continuity recovery
+- 이후 첫 healthcheck에서 `account/read`와 `config/read`가 다시 성공할 때만 `active` 승격
+
+## 11. Session State Machine
 
 ```mermaid
 stateDiagram-v2
@@ -208,7 +309,7 @@ stateDiagram-v2
     ReauthRequired --> Revoked: issue closed or access withdrawn
 ```
 
-## 11. Lease Model
+## 12. Lease Model
 
 scheduled execution과 interactive execution이 같은 credential sink를 동시에 만질 수 있으므로,
 direct session access 대신 `lease`를 도입한다.
@@ -233,9 +334,9 @@ lease 규칙:
 }
 ```
 
-## 12. Interactive Vs Scheduled Execution
+## 13. Interactive Vs Scheduled Execution
 
-### 12.1 Shared Execution Contract
+### 13.1 Shared Execution Contract
 
 interactive와 scheduled 모두 같은 `RunExecutionRequest`를 사용한다.
 차이는 context source와 auth readiness check뿐이다.
@@ -248,7 +349,7 @@ interactive와 scheduled 모두 같은 `RunExecutionRequest`를 사용한다.
 | recovery on auth failure | immediate user prompt | mark `reauth_required` and skip future runs |
 | summary delivery | synchronous to user | persisted report + user notification |
 
-### 12.2 Scheduled Execution Sequence
+### 13.2 Scheduled Execution Sequence
 
 ```mermaid
 sequenceDiagram
@@ -272,9 +373,9 @@ sequenceDiagram
     SM->>DB: lease closed
 ```
 
-## 13. Refresh And Renewal Policy
+## 14. Refresh And Renewal Policy
 
-### 13.1 Proactive Refresh
+### 14.1 Proactive Refresh
 
 OpenAI 문서상 active use 중 CLI가 refresh를 자동 수행하므로,
 backend는 토큰 expiry 자체보다 `session usability`를 모니터링한다.
@@ -285,14 +386,16 @@ backend는 토큰 expiry 자체보다 `session usability`를 모니터링한다.
 - last validation이 오래된 session은 scheduler가 먼저 healthcheck job 발행
 - refresh는 run 도중 무조건 시도하지 말고, session manager를 통해 한 번만 시도
 
-### 13.2 Refresh Outcomes
+### 14.2 Refresh Outcomes
 
 - `success`: `last_refreshed_at` 업데이트, run 계속
 - `retryable_failure`: 짧은 backoff 후 healthcheck queue로 이동
 - `hard_failure`: `reauth_required` 전이, future scheduled runs 중단
 - `principal_mismatch`: 즉시 revoke, security incident로 기록
+- `workspace_mismatch`: 즉시 revoke 또는 lease deny, security incident로 기록
+- `stale_session`: refresh 시도 없이 오래 방치된 session이면 preflight renewal queue로 이동
 
-### 13.3 Renewal
+### 14.3 Renewal
 
 renewal은 refresh보다 상위 개념이다.
 
@@ -304,12 +407,27 @@ renewal이 필요한 경우:
 - auth.json missing
 - refresh token invalid
 - workspace restriction mismatch
+- expected workspace root mismatch
 - MFA or security challenge 재통과 필요
 - host migration으로 credential sink 재배치 필요
 
-## 14. Local Vs Hosted Runtime Boundary
+### 14.4 Stale Session Threshold
 
-### 14.1 Local-First v1
+stale session은 아래 중 하나로 정의한다.
+
+- `auth.json.last_refresh`가 missing
+- refresh token이 missing
+- `last_validated_at`이 scheduler policy threshold를 초과
+- `codex login status`는 성공하지만 `account/read` 또는 `config/read`가 실패
+
+v1 기본 정책:
+
+- scheduled run 직전 stale session이면 run을 시작하지 않고 healthcheck 또는 renewal job으로 보낸다.
+- stale 판정은 품질 저하가 아니라 ownership ambiguity로 취급한다.
+
+## 15. Local Vs Hosted Runtime Boundary
+
+### 15.1 Local-First v1
 
 v1 권장 경계:
 
@@ -317,13 +435,13 @@ v1 권장 경계:
 - backend control plane은 hosted 가능하지만, execution plane은 private runtime을 기본으로 둔다.
 - public SaaS multi-tenant worker에서 user ChatGPT OAuth를 직접 보관/실행하지 않는다.
 
-### 14.2 Why This Boundary Is Required
+### 15.2 Why This Boundary Is Required
 
 - 공식 문서는 ChatGPT-managed auth automation을 trusted runner 같은 좁은 환경에서만 다룬다.
 - ChatGPT OAuth material은 API key보다 회전/복구 경로가 덜 단순하다.
 - 제품 thesis도 `user-owned backend authority`를 전제로 하므로, credential path 역시 사용자 통제 하에 있어야 한다.
 
-## 15. Credential Isolation
+## 16. Credential Isolation
 
 필수 정책:
 
@@ -340,20 +458,22 @@ v1 권장 경계:
 - 2순위: encrypted secret volume + file-based `auth.json`
 - 금지: plain relational DB column, S3-like generic bucket, issue comment, run artifact bundle
 
-## 16. Failure Handling
+## 17. Failure Handling
 
-### 16.1 Failure Classes
+### 17.1 Failure Classes
 
 | Failure | Detection point | Handling |
 | --- | --- | --- |
 | auth material missing | inspect before run | `reauth_required` |
 | refresh failed | healthcheck or run start | single refresh attempt, then fail closed |
 | principal mismatch | inspect | revoke immediately |
+| workspace mismatch | inspect | deny lease, revoke if unexpected mutation is detected |
+| stale session | preflight inspect | do not run, enqueue renewal/healthcheck |
 | runner host unavailable | lease acquire | reschedule on same trusted pool only |
 | concurrent session mutation | lease conflict | serialize and retry later |
 | CLI login path blocked | bootstrap | device-auth or trusted-machine copy fallback |
 
-### 16.2 Fail Closed Policy
+### 17.2 Fail Closed Policy
 
 auth ambiguity가 발생하면 run을 계속하지 않는다.
 
@@ -362,10 +482,11 @@ auth ambiguity가 발생하면 run을 계속하지 않는다.
 - session이 누구 것인지 fingerprint가 확실하지 않음
 - expected workspace와 실제 workspace가 다름
 - copied auth cache가 refresh는 되지만 principal metadata 확인이 안 됨
+- `account/read` 또는 `config/read`를 통해 expected policy를 재확인할 수 없음
 
 이 경우 결과 품질 문제가 아니라 보안/ownership 문제이므로 즉시 중단한다.
 
-## 17. OpenClaw-Inspired But Narrower Abstraction
+## 18. OpenClaw-Inspired But Narrower Abstraction
 
 OpenClaw에서 참고할 점:
 
@@ -379,12 +500,13 @@ OpenClaw에서 참고할 점:
 - multi-provider genericity보다 `single reliable auth/session ledger`를 먼저 닫는다.
 - auth profile 전체를 product storage로 가져오지 않고, credential locator + session metadata만 DB에 남긴다.
 
-## 18. Minimum Module Breakdown
+## 19. Minimum Module Breakdown
 
 - `session_manager.py`
 - `credential_locator.py`
 - `execution_adapter.py`
 - `codex_cli_provider.py`
+- `codex_app_server_inspector.py`
 - `session_healthcheck_job.py`
 - `session_lease_store.py`
 - `session_event_store.py`
@@ -395,37 +517,43 @@ OpenClaw에서 참고할 점:
 - `credential_locator.py`: keyring/file locator resolution
 - `execution_adapter.py`: lease 획득 후 runtime request 실행
 - `codex_cli_provider.py`: `codex login`, `codex exec`, healthcheck wrapper
+- `codex_app_server_inspector.py`: `account/read`, `config/read`, loopback app-server lifecycle
 - `session_healthcheck_job.py`: scheduled preflight
 - `session_lease_store.py`: concurrency guard
 - `session_event_store.py`: audit trail
 
-## 19. Implementation Order
+## 20. Implementation Order
 
 1. session ledger + lease tables 정의
 2. credential locator abstraction 구현
-3. bootstrap + inspect path 구현
-4. execution adapter가 특정 session lease를 붙여 `codex exec` 실행하도록 구현
-5. healthcheck / refresh orchestration 추가
-6. scheduled run gating 추가
-7. reauth notification / UX 연결
+3. `codex_app_server_inspector.py`로 `account/read` + `config/read` inspect path 구현
+4. bootstrap + inspect path 구현
+5. execution adapter가 특정 session lease를 붙여 `codex exec` 실행하도록 구현
+6. healthcheck / refresh orchestration 추가
+7. scheduled run gating 추가
+8. reauth notification / UX 연결
 
-## 20. Residual Risks
+## 21. Residual Risks
 
 - ChatGPT-managed auth는 API key보다 automation 적합성이 낮다.
 - official automation guidance가 API key를 기본 권장하므로, 장기적으로 provider support 정책 변화 리스크가 있다.
 - file-based auth cache를 쓰는 경우 host compromise 영향이 크다.
 - user-owned private runner가 항상 online이 아닐 수 있다.
+- `account/read`에 의존하는 inspect path는 `app-server`의 experimental 상태 변화 영향을 받을 수 있다.
 
 v1 대응:
 
 - private trusted host requirement를 제품 제약으로 명시
 - auth healthcheck를 run 시작 전에 강제
 - break-glass API key mode를 내부 운영 fallback으로만 유지
+- app-server는 identity inspection에만 좁게 사용하고, core execution path는 `codex exec`로 분리
 
-## 21. References
+## 22. References
 
 - OpenAI Codex authentication docs: `https://developers.openai.com/codex/auth`
+- OpenAI Codex advanced CI/CD auth docs: `https://developers.openai.com/codex/auth/ci-cd-auth`
 - OpenAI Codex non-interactive docs: `https://developers.openai.com/codex/noninteractive`
+- OpenAI Codex app server docs: `https://developers.openai.com/codex/app-server`
 - OpenAI Help: Using Codex with your ChatGPT plan: `https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan`
 - OpenClaw OAuth concepts: `https://github.com/openclaw/openclaw/blob/main/docs/concepts/oauth.md`
 - OpenClaw provider hooks: `https://github.com/openclaw/openclaw/blob/main/docs/concepts/model-providers.md`

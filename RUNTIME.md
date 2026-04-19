@@ -78,6 +78,57 @@ flowchart LR
 - `Context Compactor`: token budget 초과 시 loss policy 적용
 - `Run Event Store`: replay/resume용 append-only event ledger
 
+### 4.1 Transport Decision
+
+v1 primary execution transport는 `codex exec --json`으로 고정한다.
+
+이 결정의 근거:
+
+- OpenAI 공식 `Non-interactive mode` 문서는 `codex exec`를 scripts, CI, scheduled jobs용 경로로 직접 문서화한다.
+- local CLI도 `codex exec`, `--json`, `--output-schema`, `-o`, `resume`, `-C`, `--add-dir`, `--sandbox`를 안정적인 top-level surface로 노출한다.
+- 우리 v1 목표는 backend-owned orchestration + validated proposal bundle 생성이지, Codex 내부 thread protocol 전체를 product contract로 채택하는 것이 아니다.
+
+`codex app-server`는 보조 경로로만 둔다.
+
+- 공식 문서상 app-server는 richer session protocol과 streaming notifications를 제공한다.
+- local CLI help에서는 여전히 `[experimental]`로 표시된다.
+- protocol surface가 넓고 `thread/start`, `turn/start`, `thread/resume`, `account/read`, `config/read`까지 직접 다뤄야 하므로 v1 구현/운영 리스크가 크다.
+
+따라서 v1 실행 계층은 아래처럼 나눈다.
+
+- `execution transport`: `codex exec --json --output-schema`
+- `verification/inspection transport`: loopback-only `codex app-server`
+
+권장 실행 템플릿:
+
+```text
+codex exec \
+  --json \
+  --output-schema ./schemas/research_run_v1.json \
+  -C <workspace_root> \
+  --sandbox workspace-write \
+  --add-dir <optional_extra_write_root> \
+  -o <final_message_path> \
+  "<serialized runtime prompt>"
+```
+
+요구사항별 판단:
+
+| Requirement | `codex exec` | `codex app-server` | v1 decision |
+| --- | --- | --- | --- |
+| tool calling | yes, Codex 내부 agent loop가 수행하고 JSONL event로 관찰 가능 | yes, item/tool notifications로 더 직접적 | `exec` 채택 |
+| runtime events | yes, `--json` event stream | yes, `turn/*` / `item/*` notifications | `exec` 채택 |
+| structured final output | yes, `--output-schema` | 가능하지만 client가 protocol handling 필요 | `exec` 채택 |
+| host-controlled multi-turn reinjection | 제한적 | yes, `turn/start` / `turn/steer` | v1에서는 product requirement에서 제외 |
+| transport-level resume | 제한적, `codex exec resume` 존재 | yes, `thread/resume` | v1에서는 backend replay로 대체 |
+| persisted history fidelity | CLI rollout files에 의존 | `thread/resume`가 제공되지만 persisted ThreadItems는 lossy | transport replay를 authority로 삼지 않음 |
+
+이 문서의 중요한 수정 해석:
+
+- 본 문서에서 말하는 `turn loop`, `tool result reinjection`, `resume`는 product runtime contract이지, 반드시 Codex transport가 host-controlled turn API를 제공해야 한다는 뜻은 아니다.
+- v1에서는 `codex exec`가 한 번의 run 안에서 내부적으로 tool loop를 수행하고, backend는 JSONL events와 final proposal bundle을 받아 자체 ledger에 기록한다.
+- 실패 후 재개는 `app-server` thread restore가 아니라 backend가 보유한 `RunExecutionRequest`, artifact store, event ledger를 바탕으로 새 `codex exec`를 다시 시작하는 방식으로 구현한다.
+
 ## 5. Canonical Contracts
 
 ### 5.1 `RunExecutionRequest`
