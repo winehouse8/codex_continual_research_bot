@@ -458,6 +458,92 @@ v1 권장 경계:
 - 2순위: encrypted secret volume + file-based `auth.json`
 - 금지: plain relational DB column, S3-like generic bucket, issue comment, run artifact bundle
 
+### 16.1 Primary v1 Isolation Strategy
+
+shared trusted runner에서의 v1 기본 전략은 `per-principal CODEX_HOME + per-principal workspace root + lease-gated wrapper launch`다.
+
+구체 규칙:
+
+- 각 principal마다 전용 `CODEX_HOME` directory를 만든다.
+- 해당 directory 아래에 principal 전용 `config.toml`, `auth.json` 또는 credential locator metadata, `history.jsonl`, log files만 존재하게 한다.
+- 각 principal은 자신에게 할당된 `workspace_root` worktree에서만 실행한다.
+- 모든 실행은 wrapper가 `CODEX_HOME=<principal_root>`를 export하고 `codex exec -C <workspace_root>`로 시작한다.
+- session ledger의 `credential_locator`와 `workspace_root`는 둘 다 이 principal root를 가리켜야 한다.
+- lease가 없는 상태에서는 해당 `CODEX_HOME`을 mount하거나 사용하지 않는다.
+
+권장 directory 예시:
+
+```text
+/srv/codex-runner/principals/<principal_fingerprint>/
+  codex-home/
+    config.toml
+    auth.json
+    history.jsonl
+    log/
+  worktrees/
+    codex_continual_research_bot/
+```
+
+이 전략을 primary로 두는 이유:
+
+- OpenAI docs와 local CLI가 `~/.codex/auth.json`, `config.toml`, `history.jsonl`, `log_dir`처럼 config/state가 `CODEX_HOME` 계열 경로에 모인다는 점을 전제로 한다.
+- local CLI는 모든 주요 command에서 `-c` override를 지원하지만, trust history, logs, auth cache까지 `-c`만으로 완전히 분리하는 contract는 아니다.
+- 따라서 v1에서는 `shared ~/.codex`를 계속 쓰면서 부분 override하는 방식보다, config/state root 자체를 principal 단위로 분리하는 편이 더 안전하다.
+
+### 16.2 Why Working Directory Alone Is Not Enough
+
+`cwd` 또는 `codex exec -C <dir>`만 바꾸는 것으로는 isolation이 닫히지 않는다.
+
+이유:
+
+- project trust와 `.codex/config.toml` loading은 working directory 영향을 받지만, user-level auth/cache/log/history는 별도 config root에 남는다.
+- 같은 host user가 여러 principal의 `~/.codex`를 공유하면 auth cache, history, logs, project trust가 섞일 수 있다.
+- 따라서 `workspace_root` isolation은 필요하지만 충분조건이 아니다.
+
+### 16.3 Environment Variable, Home, Symlink, Container Options
+
+가능한 선택지 비교:
+
+| Option | 장점 | v1 판단 |
+| --- | --- | --- |
+| per-principal `CODEX_HOME` | config/auth/history/log를 한 root에서 분리 가능 | primary |
+| isolated `HOME` only | 일부 credential lookup와 shell tools 분리에 도움 | hardening option, 단독으로는 불충분 |
+| symlinked `~/.codex` | 구현은 단순 | 실수 여지가 커서 primary로 금지 |
+| working directory only | worktree 분리는 가능 | config/auth isolation이 안 되어 불충분 |
+| container / microVM boundary | strongest isolation | 운영비를 감당할 수 있으면 preferred hardening, but not required for v1 |
+
+정리하면:
+
+- v1 minimum은 `per-principal CODEX_HOME`이다.
+- stronger deployment에서는 `per-principal container or Unix user + per-principal CODEX_HOME` 조합을 권장한다.
+- symlink-only 전략과 shared-home 전략은 채택하지 않는다.
+
+### 16.4 Keyring Vs File-Based Storage
+
+keyring-backed storage와 file-based storage는 isolation 구현 방식이 다르다.
+
+- file-based storage를 쓰면 `CODEX_HOME/auth.json`과 encrypted volume isolation만으로 닫기 쉽다.
+- OS keyring을 쓰면 keyring namespace가 대개 OS login principal에 묶이므로, 하나의 Unix account가 여러 end-user principal을 대신 실행하는 구조와 상충할 수 있다.
+
+따라서 v1 운영 정책은 아래처럼 둔다.
+
+- shared runner에서 multi-principal을 한 OS account로 처리할 때는 file-based credential storage를 기본으로 한다.
+- keyring을 유지하려면 principal별 Unix user 또는 container boundary까지 함께 분리한다.
+- 어떤 경우에도 두 principal이 같은 keyring namespace나 같은 `auth.json` file path를 공유하면 안 된다.
+
+### 16.5 Config Locator And Credential Locator Binding
+
+`credential_locator`와 `config locator`는 분리 저장하더라도 lifecycle은 같이 묶어야 한다.
+
+필수 바인딩:
+
+- 하나의 session ledger row는 정확히 하나의 `credential_locator`와 하나의 `CODEX_HOME/config.toml`을 가진다.
+- `forced_login_method = "chatgpt"`와 `forced_chatgpt_workspace_id`는 principal 전용 config에 기록한다.
+- `[projects."<workspace_root>"]` trust entry도 같은 principal config root에서 관리한다.
+- inspect 단계에서 `account/read`, `config/read`, `workspace_root`, `credential_locator`가 모두 같은 principal binding을 가리키는지 확인한다.
+
+이렇게 해야 auth identity, workspace policy, trust policy가 서로 다른 root에서 drift 나는 것을 막을 수 있다.
+
 ## 17. Failure Handling
 
 ### 17.1 Failure Classes

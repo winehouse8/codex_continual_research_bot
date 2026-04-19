@@ -20,10 +20,10 @@
 
 핵심 설계 결정:
 
-- runtime의 표준 인터페이스는 `single run request -> many turns -> validated proposal bundle`이다.
+- v1 runtime의 표준 인터페이스는 `single run request -> single codex exec attempt stream -> validated proposal bundle`이다.
 - Codex는 직접 graph를 수정하지 않는다.
 - tool call은 항상 backend registry를 통해 검증, 승인, 실행된다.
-- 각 turn의 산출물은 `event log`로 남겨 재개와 replay가 가능해야 한다.
+- backend는 `codex exec --json` event stream과 최종 산출물을 자체 event log에 적재해 재개와 replay의 authority로 삼는다.
 - final structured output은 단일 shot 성공을 가정하지 않고 `repairable contract`로 다룬다.
 
 ## 3. Runtime Boundaries
@@ -125,9 +125,49 @@ codex exec \
 
 이 문서의 중요한 수정 해석:
 
-- 본 문서에서 말하는 `turn loop`, `tool result reinjection`, `resume`는 product runtime contract이지, 반드시 Codex transport가 host-controlled turn API를 제공해야 한다는 뜻은 아니다.
+- 본 문서에서 말하는 `turn loop`, `tool result reinjection`, `resume`는 product runtime contract이지, v1 transport가 host-controlled turn API를 제공해야 한다는 뜻은 아니다.
 - v1에서는 `codex exec`가 한 번의 run 안에서 내부적으로 tool loop를 수행하고, backend는 JSONL events와 final proposal bundle을 받아 자체 ledger에 기록한다.
 - 실패 후 재개는 `app-server` thread restore가 아니라 backend가 보유한 `RunExecutionRequest`, artifact store, event ledger를 바탕으로 새 `codex exec`를 다시 시작하는 방식으로 구현한다.
+
+### 4.2 Backend Loop Vs Codex Loop
+
+v1에서 실제 loop ownership은 아래처럼 자른다.
+
+backend가 소유하는 loop:
+
+- `RunExecutionRequest` 조립
+- allowed tool / sandbox / writable roots / schema path 결정
+- `codex exec --json` 프로세스 시작
+- JSONL event 수집, 정규화, 저장
+- 종료 후 final output validation
+- validation 실패 시 repair attempt를 위한 새 `codex exec` 재호출
+- retry / idempotency / artifact persistence / fail-closed policy
+
+Codex 내부 loop에 맡기는 것:
+
+- 한 번의 `codex exec` 실행 안에서 발생하는 model turn progression
+- tool selection
+- tool result consumption과 다음 reasoning step 연결
+- final answer 초안 생성
+
+즉, v1의 backend runtime은 `host-controlled multi-turn session runtime`이 아니라
+`exec attempt orchestrator + event ingester + validator`에 가깝다.
+
+### 4.3 Future-Path Abstractions
+
+아래 추상화는 문서에서 계속 쓰되, v1 implementation target으로 오해하면 안 된다.
+
+- `turn loop`
+- `tool result reinjection`
+- `ModelTurn`, `ToolDispatch`, `Reinjection`
+- `CodexTurnResponse`
+- transport-level `thread/resume`
+
+v1 해석:
+
+- 위 용어는 backend가 관찰하고 검증해야 하는 logical stages를 설명한다.
+- 실제 transport contract는 `codex exec` JSONL events + final message 파일이다.
+- host가 직접 `turn/start`나 `turn/steer`를 호출하는 설계는 future `app-server` or custom harness path로 내린다.
 
 ## 5. Canonical Contracts
 
@@ -271,47 +311,45 @@ tool call은 아래 순서로 통과해야 한다.
 
 하나라도 실패하면 tool은 실행되지 않고, failure event를 Codex에 reinject한다.
 
-## 7. Turn Loop
+## 7. Exec Attempt Lifecycle
 
-### 7.1 Core Turn Algorithm
+### 7.1 Core V1 Algorithm
 
 ```text
 prepare prompt context
-emit turn.started
-call Codex
-parse model items
-if tool calls exist:
-  validate each call
-  execute allowed calls
-  append results to event log
-  reinject tool results into next turn
-  continue
-if final answer candidate exists:
-  validate against output contract
-  if valid -> complete
-  else -> run repair loop
-if neither tool call nor final answer:
-  emit protocol error and trigger repair / fail
+start codex exec --json --output-schema
+stream JSONL events from stdout
+normalize and persist observed tool / reasoning / final-output events
+wait for process exit
+collect final message artifact
+validate against output contract
+if valid -> complete
+if invalid -> start a new repair attempt with minimal repair prompt
+if transport failed -> retry or fail based on retry policy
 ```
 
-### 7.2 Turn State Machine
+핵심 해석:
+
+- tool dispatch와 reinjection은 v1에서 Codex 내부 execution loop에서 일어난다.
+- backend는 그 과정을 JSONL events로 관찰하고 policy violation만 fail closed 한다.
+- backend가 tool result를 새 turn에 직접 넣는 host-controlled multi-turn loop는 v1 범위 밖이다.
+
+### 7.2 Logical Stage Model
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Ready
-    Ready --> ModelTurn
-    ModelTurn --> ToolDispatch: tool calls returned
-    ModelTurn --> ValidateFinal: final answer returned
-    ModelTurn --> ProtocolRepair: malformed response
-    ToolDispatch --> Reinjection
-    Reinjection --> ModelTurn
+    [*] --> Preflight
+    Preflight --> ExecRunning
+    ExecRunning --> EventIngestion: JSONL events observed
+    EventIngestion --> ExecRunning
+    ExecRunning --> ValidateFinal: process exits with final output
+    ExecRunning --> TransportRetry: timeout / transport failure
     ValidateFinal --> Completed: schema valid
     ValidateFinal --> OutputRepair: schema invalid
-    OutputRepair --> ModelTurn
+    OutputRepair --> ExecRunning: new repair attempt
     OutputRepair --> Failed: repair budget exhausted
-    ProtocolRepair --> ModelTurn
-    ProtocolRepair --> Failed: protocol repair exhausted
-    ModelTurn --> Failed: time/turn/tool budget exceeded
+    TransportRetry --> ExecRunning: retry allowed
+    TransportRetry --> Failed: retry budget exhausted
 ```
 
 ### 7.3 Parallel Tool Calls
@@ -332,6 +370,12 @@ v1 정책:
 
 tool result는 raw output 전체를 다시 넣지 않는다.
 reinjection payload는 `result envelope`로 정규화한다.
+
+중요한 경계:
+
+- v1에서는 이 `result envelope`가 backend -> Codex transport payload로 직접 전달되는 것이 아니다.
+- Codex는 한 번의 `exec` attempt 안에서 자체 tool loop를 유지하고, backend는 동일한 envelope shape를 artifact/event ledger의 canonical form으로 저장한다.
+- future host-controlled runtime이나 app-server path에서는 이 canonical envelope를 실제 reinjection payload로 재사용할 수 있다.
 
 ```json
 {
@@ -500,7 +544,7 @@ runtime이 책임지지 않는 것:
 
 ## 12. Resume Strategy
 
-resume는 `whole prompt rebuild`가 아니라 `event ledger replay + compacted context restore`로 수행한다.
+resume는 `transport-native thread resume`가 아니라 `event ledger replay + compacted context restore + fresh codex exec attempt`로 수행한다.
 
 resume 절차:
 
@@ -508,7 +552,7 @@ resume 절차:
 2. unfinished tool call 확인
 3. duplicate-safe tool만 자동 재개
 4. last valid context snapshot 복원
-5. Codex에 `resume notice`와 미완료 작업만 전달
+5. 새로운 `codex exec` prompt에 `resume notice`와 미완료 작업만 전달
 
 resume를 금지해야 하는 경우:
 
@@ -521,9 +565,9 @@ resume를 금지해야 하는 경우:
 ```text
 RuntimeCoordinator.execute(request) -> RuntimeResult
 PromptAssembler.build(request, resume_state?) -> PromptFrame
-CodexClient.runTurn(turn_request) -> CodexTurnResponse
+CodexExecClient.run(request, prompt_frame) -> ExecRunResult
 ToolRegistry.resolve(tool_name) -> ToolDefinition
-ToolExecutor.execute(call, context) -> ToolExecutionResult
+ToolEventNormalizer.normalize(raw_event) -> RuntimeEvent
 OutputValidator.validate(bundle, schema_id) -> ValidationResult
 ContextCompactor.compact(history, budget) -> CompactedHistory
 RunEventStore.append(event) -> void
@@ -534,7 +578,7 @@ RunEventStore.replay(run_id) -> RuntimeReplayState
 
 1. `RunEventStore`와 `RuntimeEvent` schema부터 구현
 2. `ToolRegistry`와 manifest validation 구현
-3. 단일 turn + 단일 tool reinjection loop 구현
+3. 단일 `codex exec --json` attempt ingestion + final output collection 구현
 4. final output validator + repair loop 구현
 5. context compaction 구현
 6. resume/replay 구현
