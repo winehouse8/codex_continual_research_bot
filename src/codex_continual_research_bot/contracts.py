@@ -437,7 +437,7 @@ class QueueJob(StrictModel):
     kind: QueueJobKind
     state: QueueJobState
     topic_id: StrictStr = Field(min_length=1)
-    run_id: StrictStr = Field(min_length=1)
+    requested_run_id: StrictStr = Field(min_length=1)
     dedupe_key: StrictStr = Field(min_length=1)
     idempotency_key: StrictStr = Field(min_length=1)
     priority: StrictInt = Field(ge=0)
