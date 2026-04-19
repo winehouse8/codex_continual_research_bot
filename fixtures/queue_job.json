@@ -1,0 +1,21 @@
+{
+  "queue_item_id": "queue_001",
+  "kind": "run.execute",
+  "state": "queued",
+  "topic_id": "topic_codex_auth_boundary",
+  "run_id": "run_2026_04_19_001",
+  "dedupe_key": "run.execute:topic_codex_auth_boundary:2026-04-19",
+  "idempotency_key": "run.execute:run_2026_04_19_001:v1",
+  "priority": 50,
+  "attempts": 0,
+  "max_attempts": 3,
+  "available_at": "2026-04-19T11:10:00Z",
+  "payload": {
+    "initiator": "scheduler",
+    "objective": "Re-check Codex session ownership constraints before the next scheduled run.",
+    "selected_queue_item_ids": [
+      "queue_001"
+    ]
+  },
+  "last_failure": null
+}

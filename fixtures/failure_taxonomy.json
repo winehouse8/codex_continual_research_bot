@@ -1,0 +1,86 @@
+[
+  {
+    "code": "auth_material_missing",
+    "category": "auth",
+    "retryable": false,
+    "human_review_required": false,
+    "description": "The expected auth material is absent before inspect or run start."
+  },
+  {
+    "code": "refresh_failed",
+    "category": "auth",
+    "retryable": true,
+    "human_review_required": false,
+    "description": "A single refresh attempt failed and the session must fail closed."
+  },
+  {
+    "code": "principal_mismatch",
+    "category": "identity",
+    "retryable": false,
+    "human_review_required": true,
+    "description": "account/read did not match the ledgered principal fingerprint."
+  },
+  {
+    "code": "workspace_mismatch",
+    "category": "identity",
+    "retryable": false,
+    "human_review_required": true,
+    "description": "Observed workspace policy or working tree differed from the lease contract."
+  },
+  {
+    "code": "stale_session",
+    "category": "auth",
+    "retryable": true,
+    "human_review_required": false,
+    "description": "Session freshness checks failed preflight and the run should move to healthcheck or renewal."
+  },
+  {
+    "code": "runner_host_unavailable",
+    "category": "runtime",
+    "retryable": true,
+    "human_review_required": false,
+    "description": "The trusted execution host could not accept the run."
+  },
+  {
+    "code": "concurrent_session_mutation",
+    "category": "concurrency",
+    "retryable": true,
+    "human_review_required": false,
+    "description": "Another worker held the session lease or mutated the session concurrently."
+  },
+  {
+    "code": "cli_login_path_blocked",
+    "category": "auth",
+    "retryable": false,
+    "human_review_required": true,
+    "description": "The runtime cannot complete the expected Codex login flow."
+  },
+  {
+    "code": "output_schema_validation_failed",
+    "category": "contract",
+    "retryable": true,
+    "human_review_required": false,
+    "description": "The final runtime payload failed canonical schema validation."
+  },
+  {
+    "code": "malformed_proposal",
+    "category": "contract",
+    "retryable": true,
+    "human_review_required": false,
+    "description": "The proposal bundle could not be repaired into a valid canonical payload."
+  },
+  {
+    "code": "queue_mutation_mismatch",
+    "category": "queue",
+    "retryable": false,
+    "human_review_required": true,
+    "description": "The queue mutation requested by the worker did not match ledger state."
+  },
+  {
+    "code": "duplicate_queue_delivery",
+    "category": "queue",
+    "retryable": false,
+    "human_review_required": true,
+    "description": "The same queue item was delivered beyond the allowed idempotency boundary."
+  }
+]
