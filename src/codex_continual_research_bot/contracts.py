@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 from datetime import datetime
 from enum import Enum
-from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    model_validator,
+)
 
 
 class StrictModel(BaseModel):
@@ -276,13 +284,71 @@ class ProposalBundle(StrictModel):
     execution_meta: ExecutionMeta
 
 
+class RunStartedPayload(StrictModel):
+    objective: StrictStr = Field(min_length=1)
+    mode: RunMode
+
+
+class ToolStartedPayload(StrictModel):
+    tool_call_id: StrictStr = Field(min_length=1)
+    tool_name: StrictStr = Field(min_length=1)
+
+
+class ToolCompletedPayload(StrictModel):
+    tool_call_id: StrictStr = Field(min_length=1)
+    tool_name: StrictStr = Field(min_length=1)
+    result_digest: StrictStr = Field(min_length=1)
+
+
+class OutputValidatedPayload(StrictModel):
+    schema_id: StrictStr = Field(min_length=1)
+    repair_attempts: StrictInt = Field(ge=0)
+
+
+class RunCompletedPayload(StrictModel):
+    proposal_bundle_digest: StrictStr = Field(min_length=1)
+    summary_digest: StrictStr = Field(min_length=1)
+
+
+class RunFailedPayload(StrictModel):
+    failure_code: FailureCode
+    detail: StrictStr = Field(min_length=1)
+
+
+RuntimeEventPayload = (
+    RunStartedPayload
+    | ToolStartedPayload
+    | ToolCompletedPayload
+    | OutputValidatedPayload
+    | RunCompletedPayload
+    | RunFailedPayload
+)
+
+
 class RuntimeEvent(StrictModel):
     run_id: StrictStr = Field(min_length=1)
     seq: StrictInt = Field(ge=0)
     event_type: RuntimeEventType
     turn_index: StrictInt = Field(ge=0)
     timestamp: datetime
-    payload: dict[StrictStr, Any]
+    payload: RuntimeEventPayload
+
+    @model_validator(mode="after")
+    def validate_payload_matches_event_type(self) -> RuntimeEvent:
+        payload_type_by_event = {
+            RuntimeEventType.RUN_STARTED: RunStartedPayload,
+            RuntimeEventType.TOOL_STARTED: ToolStartedPayload,
+            RuntimeEventType.TOOL_COMPLETED: ToolCompletedPayload,
+            RuntimeEventType.OUTPUT_VALIDATED: OutputValidatedPayload,
+            RuntimeEventType.RUN_COMPLETED: RunCompletedPayload,
+            RuntimeEventType.RUN_FAILED: RunFailedPayload,
+        }
+        expected_type = payload_type_by_event[self.event_type]
+        if not isinstance(self.payload, expected_type):
+            raise ValueError(
+                f"payload for {self.event_type.value} must be {expected_type.__name__}"
+            )
+        return self
 
 
 class AccountSnapshot(StrictModel):
@@ -313,6 +379,14 @@ class SessionChecks(StrictModel):
     session_fresh: StrictBool
 
 
+def derive_principal_fingerprint(
+    *, email: str, account_type: str, workspace_id: str | None
+) -> str:
+    workspace_component = workspace_id.strip() if workspace_id and workspace_id.strip() else "-"
+    canonical = f"{email.strip().lower()}|{account_type.strip()}|{workspace_component}"
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
 class SessionInspectResult(StrictModel):
     session_id: StrictStr = Field(min_length=1)
     principal_id: StrictStr = Field(min_length=1)
@@ -332,6 +406,17 @@ class SessionInspectResult(StrictModel):
     inspected_at: datetime
     last_validated_at: datetime
     last_refreshed_at: datetime
+
+    @model_validator(mode="after")
+    def validate_principal_fingerprint(self) -> SessionInspectResult:
+        expected_fingerprint = derive_principal_fingerprint(
+            email=self.account.email,
+            account_type=self.account.type,
+            workspace_id=self.config.forced_chatgpt_workspace_id,
+        )
+        if self.principal_fingerprint != expected_fingerprint:
+            raise ValueError("principal_fingerprint must match the canonical derivation rule")
+        return self
 
 
 class QueueFailure(StrictModel):

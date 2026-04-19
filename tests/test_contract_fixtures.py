@@ -13,7 +13,9 @@ from codex_continual_research_bot.contracts import (
     QueueJob,
     RunExecutionRequest,
     RuntimeEvent,
+    RuntimeEventType,
     SessionInspectResult,
+    derive_principal_fingerprint,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -121,6 +123,87 @@ def test_rejects_missing_required_field(
 
     with pytest.raises(ValidationError):
         MODEL_BY_FIXTURE[fixture_name].model_validate(payload)
+
+
+def test_session_inspect_fixture_fingerprint_is_derived_from_account_and_config() -> None:
+    payload = load_fixture("session_inspect.json")
+    expected = derive_principal_fingerprint(
+        email=payload["account"]["email"],
+        account_type=payload["account"]["type"],
+        workspace_id=payload["config"]["forced_chatgpt_workspace_id"],
+    )
+
+    assert payload["principal_fingerprint"] == expected
+    parsed = SessionInspectResult.model_validate(payload)
+    assert parsed.principal_fingerprint == expected
+
+
+def test_session_inspect_rejects_mismatched_fingerprint() -> None:
+    payload = load_fixture("session_inspect.json")
+    payload["principal_fingerprint"] = "researcher@example.com|chatgpt|ws_123456"
+
+    with pytest.raises(ValidationError):
+        SessionInspectResult.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("event_type", "payload"),
+    [
+        ("run.started", {"objective": "Challenge the current best hypothesis.", "mode": "scheduled"}),
+        ("tool.started", {"tool_call_id": "call_007", "tool_name": "web.search"}),
+        (
+            "tool.completed",
+            {
+                "tool_call_id": "call_008",
+                "tool_name": "web.search",
+                "result_digest": "sha256:2c7ed8e0a3de4977dd4c67d9390fe2e20ce95ccf0df238dab28c166a4630bf46",
+            },
+        ),
+        ("output.validated", {"schema_id": "proposal_bundle.v1", "repair_attempts": 1}),
+        (
+            "run.completed",
+            {
+                "proposal_bundle_digest": "sha256:proposal-bundle",
+                "summary_digest": "sha256:summary",
+            },
+        ),
+        (
+            "run.failed",
+            {"failure_code": "output_schema_validation_failed", "detail": "final output did not match the schema"},
+        ),
+    ],
+)
+def test_runtime_event_accepts_only_declared_payload_shape(
+    event_type: str,
+    payload: dict[str, Any],
+) -> None:
+    event = {
+        "run_id": "run_2026_04_19_001",
+        "seq": 17,
+        "event_type": event_type,
+        "turn_index": 3,
+        "timestamp": "2026-04-19T11:00:00Z",
+        "payload": payload,
+    }
+
+    parsed = RuntimeEvent.model_validate(event)
+    assert parsed.event_type == RuntimeEventType(event_type)
+
+
+def test_runtime_event_rejects_payload_variant_mismatch() -> None:
+    payload = load_fixture("runtime_event.json")
+    payload["event_type"] = "run.failed"
+
+    with pytest.raises(ValidationError):
+        RuntimeEvent.model_validate(payload)
+
+
+def test_runtime_event_rejects_nested_additional_properties() -> None:
+    payload = load_fixture("runtime_event.json")
+    payload["payload"]["unexpected_nested"] = "drift"
+
+    with pytest.raises(ValidationError):
+        RuntimeEvent.model_validate(payload)
 
 
 def test_failure_taxonomy_matches_enum() -> None:

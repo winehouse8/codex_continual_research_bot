@@ -9,7 +9,7 @@
   "workspace_root": "/srv/codex/worktrees/topic-auth-boundary",
   "verification_level": "account-read+config-read",
   "login_method": "chatgpt",
-  "principal_fingerprint": "researcher@example.com|chatgpt|ws_123456",
+  "principal_fingerprint": "667d512af1d81f88aad54ac804898fe53d26e0485ea07ff9ff52eb24ad62583a",
   "account": {
     "email": "researcher@example.com",
     "type": "chatgpt",
