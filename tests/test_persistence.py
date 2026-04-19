@@ -143,6 +143,46 @@ def test_append_only_run_event_immutability(tmp_path: Path) -> None:
             ("run.completed", "run_001", 0),
         )
 
+    with ledger.connect() as connection, pytest.raises(
+        sqlite3.IntegrityError, match="append-only"
+    ):
+        connection.execute(
+            "DELETE FROM run_events WHERE run_id = ? AND seq = ?",
+            ("run_001", 0),
+        )
+
+
+def test_append_only_session_event_immutability(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    ledger.create_session_record(
+        session_id="session_001",
+        principal_id="principal_001",
+        workspace_id="ws_001",
+        state="active",
+        credential_locator="~/.codex/auth.json",
+    )
+    ledger.append_session_event(
+        session_id="session_001",
+        event_type="session.started",
+        payload={"source": "test"},
+    )
+
+    with ledger.connect() as connection, pytest.raises(
+        sqlite3.IntegrityError, match="append-only"
+    ):
+        connection.execute(
+            "UPDATE session_events SET event_type = ? WHERE session_id = ?",
+            ("session.ended", "session_001"),
+        )
+
+    with ledger.connect() as connection, pytest.raises(
+        sqlite3.IntegrityError, match="append-only"
+    ):
+        connection.execute(
+            "DELETE FROM session_events WHERE session_id = ?",
+            ("session_001",),
+        )
+
 
 def test_concurrent_dequeue_claim_race_allows_single_winner(tmp_path: Path) -> None:
     ledger = make_ledger(tmp_path)
@@ -172,6 +212,31 @@ def test_concurrent_dequeue_claim_race_allows_single_winner(tmp_path: Path) -> N
     assert queue_row is not None
     assert queue_row["state"] == QueueJobState.CLAIMED.value
     assert queue_row["claimed_by"] in winners
+
+    idempotency_record = ledger.get_idempotency_record("idem_001")
+    assert idempotency_record is not None
+    assert idempotency_record["run_id"] in {"run_a", "run_b"}
+
+
+def test_claim_links_idempotency_record_to_run(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    ledger.reserve_idempotency_key(
+        idempotency_key="idem_001",
+        scope="run.execute",
+        request_digest="sha256:queue_001",
+    )
+    ledger.enqueue_job(make_queue_job())
+
+    claimed = ledger.claim_next_queue_item_for_run(
+        worker_id="worker-a",
+        run_id="run_001",
+        mode="scheduled",
+    )
+
+    assert claimed is not None
+    idempotency_record = ledger.get_idempotency_record("idem_001")
+    assert idempotency_record is not None
+    assert idempotency_record["run_id"] == "run_001"
 
 
 def test_queue_retry_counter_update(tmp_path: Path) -> None:
@@ -260,3 +325,31 @@ def test_persistence_transaction_rolls_back_claim_on_run_insert_failure(tmp_path
     assert rolled_back_queue["state"] == QueueJobState.QUEUED.value
     assert rolled_back_queue["claimed_by"] is None
     assert ledger.fetch_run("run_duplicate") is not None
+
+
+def test_claim_rolls_back_when_idempotency_run_link_is_not_writable(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    ledger.reserve_idempotency_key(
+        idempotency_key="idem_001",
+        scope="run.execute",
+        request_digest="sha256:queue_001",
+        run_id="run_existing",
+    )
+    ledger.enqueue_job(make_queue_job())
+
+    with pytest.raises(sqlite3.IntegrityError, match="already linked to a run"):
+        ledger.claim_next_queue_item_for_run(
+            worker_id="worker-a",
+            run_id="run_001",
+            mode="scheduled",
+        )
+
+    queue_row = ledger.fetch_queue_item("queue_001")
+    assert queue_row is not None
+    assert queue_row["state"] == QueueJobState.QUEUED.value
+    assert queue_row["claimed_by"] is None
+    assert ledger.fetch_run("run_001") is None
+
+    idempotency_record = ledger.get_idempotency_record("idem_001")
+    assert idempotency_record is not None
+    assert idempotency_record["run_id"] == "run_existing"

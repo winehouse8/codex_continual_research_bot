@@ -291,6 +291,21 @@ class SQLitePersistenceLedger:
                         now_value,
                     ),
                 )
+                cursor = connection.execute(
+                    """
+                    UPDATE idempotency_keys
+                    SET run_id = ?
+                    WHERE idempotency_key = ? AND run_id IS NULL
+                    """,
+                    (
+                        run_id,
+                        row["idempotency_key"],
+                    ),
+                )
+                if cursor.rowcount == 0:
+                    raise sqlite3.IntegrityError(
+                        "idempotency key is missing or already linked to a run"
+                    )
                 connection.execute("COMMIT")
             except Exception:
                 connection.execute("ROLLBACK")
