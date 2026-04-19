@@ -21,6 +21,7 @@
 - Codex는 `research execution engine`이자 사용자 접점이다.
 - backend는 `topic state`, `queue`, `scheduler`, `provenance`, `revision authority`를 소유한다.
 - graph의 핵심 판단 단위는 fact가 아니라 `hypothesis`다.
+- 아키텍처의 목표는 hypothesis를 누적 보관하는 것이 아니라 `competition loop`와 `selection pressure`를 유지하는 것이다.
 - 모든 run은 `user-visible summary`와 `backend-owned state update`를 동시에 남겨야 한다.
 - Codex 세션은 장기 상태 저장소가 아니므로, 모든 재실행은 backend snapshot에서 복원 가능해야 한다.
 
@@ -67,9 +68,23 @@ flowchart LR
 컨텍스트 설명:
 
 - 사용자는 Codex에서 topic 상태 확인, 즉시 연구 실행, 의견 입력을 수행한다.
-- scheduler는 topic frontier와 stale 상태를 기준으로 run을 생성한다.
+- scheduler는 topic frontier와 stale 상태를 기준으로 run을 생성하며, 반복 실행이 competition pressure를 잃지 않도록 자극한다.
 - backend는 run 계획, queue 소비, graph update, provenance persistence를 담당한다.
 - Codex adapter는 backend 내부의 하위 모듈이며, state authority를 가지지 않는다.
+
+## 4.1 Hypothesis Competition Loop
+
+아키텍처 수준에서 모든 run은 아래 경쟁 루프의 일부여야 한다.
+
+1. current best hypothesis를 불러온다.
+2. 현재 가설을 공격하거나 대체할 challenger hypothesis를 생성한다.
+3. support evidence와 challenge evidence를 모두 수집한다.
+4. adversarial verification과 reconciliation을 수행한다.
+5. 약한 hypothesis를 weaken, supersede, retire 중 하나로 정리한다.
+6. 남은 unresolved conflict를 다음 frontier로 되돌린다.
+
+이 루프가 없다면 repeated run은 검색 반복일 뿐이며,
+아키텍처 목표인 belief improvement를 보장하지 못한다.
 
 ## 5. Primary Modules
 
@@ -97,6 +112,7 @@ flowchart LR
 - run lifecycle 관리
 - frontier selection
 - strategy allocation
+- hypothesis competition loop 조율
 - Codex adapter 호출
 - 결과 validation 및 graph write transaction 조율
 
@@ -105,6 +121,7 @@ flowchart LR
 - `run_started`, `evidence_acquired`, `revision_applied`, `run_completed`, `run_failed` 같은 내부 상태 전이 관리
 - 단계별 idempotency key 부여
 - 실패 시 재시도 정책 적용
+- 매 run이 최소 `current best hypothesis attack`, `challenger generation`, `adversarial verification`, `reconciliation`, `weak hypothesis retirement` 중 일부를 실제로 수행했는지 기록
 
 ### 5.3 Codex Execution Adapter
 
@@ -159,6 +176,7 @@ flowchart LR
 - stale topic 탐지
 - 높은 uncertainty topic 재실행
 - user input backlog 처리 우선순위 조정
+- competition pressure가 낮아진 topic 재가열
 
 스케줄 기준 예시:
 
@@ -167,6 +185,16 @@ flowchart LR
 - open question 수
 - 최신 evidence freshness
 - user input 적체량
+- new challenger hypothesis rate
+- source diversity delta
+- support vs challenge ratio
+- hypothesis revision / retirement rate
+
+설계 원칙:
+
+- scheduler는 단순 refresh 타이머가 아니라 competition pressure 유지 장치다.
+- frontier selection은 "무엇을 다시 볼까"보다 "어떤 가설을 다시 공격할까"를 우선해야 한다.
+- strategy allocation은 익숙한 hypothesis를 반복 확인하는 대신 challenge가 부족한 지점을 우선 배정해야 한다.
 
 ### 5.6 State Store
 
@@ -337,6 +365,12 @@ canonicalizer 책임:
 - edge type validation
 - schema compatibility check
 
+competition 관련 추가 책임:
+
+- challenger hypothesis를 기존 best hypothesis와 명시적으로 연결
+- support-only 갱신이 반복될 때 stagnation 후보로 태깅
+- weak hypothesis retirement 후보를 revision engine에 전달
+
 ## 8. Relational Data Model
 
 관계형 저장소에 최소 필요한 테이블:
@@ -391,15 +425,20 @@ stateDiagram-v2
     queued --> loading_state
     loading_state --> selecting_frontier
     selecting_frontier --> planning
-    planning --> codex_executing
+    planning --> attacking_current_best
+    attacking_current_best --> generating_challengers
+    generating_challengers --> codex_executing
     codex_executing --> normalizing
     normalizing --> adjudicating
+    adjudicating --> retiring_weak_hypotheses
+    retiring_weak_hypotheses --> persisting
     adjudicating --> persisting
     persisting --> summarizing
     summarizing --> completed
     codex_executing --> failed
     normalizing --> failed
     adjudicating --> failed
+    retiring_weak_hypotheses --> failed
     persisting --> failed
     failed --> queued: retryable
     failed --> dead_letter: terminal
@@ -411,9 +450,12 @@ stateDiagram-v2
 - `loading_state`: topic snapshot과 queue 입력 복원
 - `selecting_frontier`: 이번 run의 불확실성 목표 결정
 - `planning`: strategy와 Codex prompt payload 구성
+- `attacking_current_best`: 현재 best hypothesis의 취약점과 반증 가능성을 명시
+- `generating_challengers`: 대안 가설과 counter-position 생성
 - `codex_executing`: evidence/claim/hypothesis proposal 생성
 - `normalizing`: schema validation과 dedupe
 - `adjudicating`: conflict taxonomy 적용 및 revision decision 결정
+- `retiring_weak_hypotheses`: 약화, 대체, 폐기 대상 hypothesis 정리
 - `persisting`: graph write, ledger write, queue mutation commit
 - `summarizing`: 사용자용 run summary와 next action 생성
 
@@ -431,9 +473,10 @@ sequenceDiagram
     API->>G: load current topic snapshot
     API->>OR: create interactive run
     OR->>G: load hypotheses, conflicts, queue, provenance
+    OR->>OR: attack current best + generate challengers
     OR->>CA: execute with bounded context
     CA-->>OR: proposed evidence/claims/decisions/summary
-    OR->>OR: normalize + adjudicate
+    OR->>OR: normalize + adjudicate + retire weak hypotheses
     OR->>G: persist graph changes
     OR-->>API: run report + next actions
     API-->>U: updated belief state
@@ -444,6 +487,7 @@ interactive run 특징:
 - 사용자가 즉시 결과를 본다.
 - queue item 없이도 직접 run을 생성할 수 있다.
 - 긴 실행은 background run으로 전환 가능해야 한다.
+- 단순 업데이트 확인이 아니라 current best hypothesis를 직접 흔들 수 있어야 한다.
 
 ## 11. Scheduled Run Sequence
 
@@ -460,6 +504,7 @@ sequenceDiagram
     WK->>Q: claim job
     WK->>OR: start scheduled run
     OR->>DB: load topic snapshot + stale frontier
+    OR->>OR: assign competition objective
     OR->>CA: execute with schedule-specific policy
     CA-->>OR: proposed updates
     OR->>DB: persist graph + run ledger + queue mutations
@@ -470,6 +515,7 @@ scheduled run 특징:
 
 - Codex 세션/인증 상태가 끊겨도 backend ledger는 살아 있어야 한다.
 - 동일 topic에 대해 동시 scheduled run은 기본적으로 직렬화한다.
+- scheduler는 challenge가 부족한 topic에 선택 압력을 다시 가해야 한다.
 
 ## 12. User Input To Queue Flow
 
@@ -501,6 +547,7 @@ adapter 입력은 최소 아래 구조를 가져야 한다.
 
 - `topic_summary`
 - `current_best_hypotheses`
+- `challenger_targets`
 - `active_conflicts`
 - `open_questions`
 - `recent_provenance_digest`
@@ -516,6 +563,7 @@ adapter 출력은 최소 아래 구조를 가져야 한다.
 - `evidence_candidates[]`
 - `claims[]`
 - `arguments[]`
+- `challenger_hypotheses[]`
 - `conflict_assessments[]`
 - `revision_proposals[]`
 - `summary_draft`
@@ -625,6 +673,10 @@ idempotency key를 최소 아래 단계에 둔다.
 - stale topic count
 - unresolved conflict count
 - hypothesis supersession rate
+- new challenger hypothesis rate
+- source diversity delta
+- support vs challenge ratio
+- hypothesis revision / retirement rate
 - queue backlog depth
 - Codex session failure rate
 
@@ -720,6 +772,7 @@ docs/
 - headless scheduled execution은 인증/세션 수명에 운영 리스크가 있다.
 - Graphiti와 application schema가 분리되면 canonicalization complexity가 증가한다.
 - temporal conflict taxonomy 품질이 낮으면 hypothesis revision 품질도 급격히 떨어진다.
+- repeated runs with no real competition이 발생하면 belief quality가 정체될 수 있다.
 
 대응:
 
@@ -727,6 +780,7 @@ docs/
 - run artifact 전단계 저장
 - repair/replay job 제공
 - human escalation path 명시
+- stagnation 감지 메트릭을 scheduler 입력과 운영 알림에 연결
 
 ## 22. References
 
