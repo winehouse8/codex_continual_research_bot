@@ -186,9 +186,12 @@ v1 해석:
   },
   "context_snapshot": {
     "topic_summary": "...",
-    "best_hypotheses": [],
+    "current_best_hypotheses": [],
+    "challenger_targets": [],
     "active_conflicts": [],
     "open_questions": [],
+    "recent_provenance_digest": "sha256:...",
+    "selected_queue_items": [],
     "queued_user_inputs": []
   },
   "tool_policy": {
@@ -217,14 +220,15 @@ runtime의 정상 종료 결과는 아래 shape를 만족해야 한다.
 
 ```json
 {
-  "summary": "...",
+  "summary_draft": "...",
   "evidence_candidates": [],
-  "claim_candidates": [],
-  "hypothesis_updates": [],
-  "conflict_updates": [],
-  "adjudication_notes": [],
-  "next_frontier_candidates": [],
-  "execution_metrics": {
+  "claims": [],
+  "arguments": [],
+  "challenger_hypotheses": [],
+  "conflict_assessments": [],
+  "revision_proposals": [],
+  "next_actions": [],
+  "execution_meta": {
     "turn_count": 0,
     "tool_call_count": 0,
     "compactions": 0,
@@ -441,9 +445,9 @@ Your previous final output failed validation.
 Return only corrected JSON.
 
 Violations:
-- hypothesis_updates[1].status must be one of strengthen/weaken/retire/supersede
+- revision_proposals[1].action must be one of strengthen/weaken/retire/supersede
 - evidence_candidates[0].source_url is missing
-- claim_candidates[2] references unknown artifact_id src_99
+- claims[2] references unknown artifact_id src_99
 ```
 
 repair 시 기존 전체 대화를 다시 길게 설명하지 않는다.

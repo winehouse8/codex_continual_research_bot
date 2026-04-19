@@ -1,0 +1,42 @@
+{
+  "session_id": "sess_001",
+  "principal_id": "user_01",
+  "purpose": "scheduled_run",
+  "host_id": "runner-seoul-01",
+  "credential_locator": "file:///var/lib/codex/principals/user_01/auth.json",
+  "state": "active",
+  "workspace_id": "ws_123456",
+  "workspace_root": "/srv/codex/worktrees/topic-auth-boundary",
+  "verification_level": "account-read+config-read",
+  "login_method": "chatgpt",
+  "principal_fingerprint": "researcher@example.com|chatgpt|ws_123456",
+  "account": {
+    "email": "researcher@example.com",
+    "type": "chatgpt",
+    "plan_type": "max",
+    "requires_openai_auth": false
+  },
+  "config": {
+    "forced_login_method": "chatgpt",
+    "forced_chatgpt_workspace_id": "ws_123456",
+    "trusted_project_paths": [
+      "/srv/codex/worktrees/topic-auth-boundary"
+    ]
+  },
+  "auth_json": {
+    "auth_mode": "chatgpt",
+    "last_refresh": "2026-04-19T10:45:00Z",
+    "has_access_token": true,
+    "has_id_token": true,
+    "has_refresh_token": true
+  },
+  "checks": {
+    "principal_match": true,
+    "workspace_match": true,
+    "trust_configured": true,
+    "session_fresh": true
+  },
+  "inspected_at": "2026-04-19T11:05:00Z",
+  "last_validated_at": "2026-04-19T11:05:00Z",
+  "last_refreshed_at": "2026-04-19T10:45:00Z"
+}

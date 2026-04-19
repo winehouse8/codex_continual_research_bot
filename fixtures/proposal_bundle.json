@@ -1,0 +1,70 @@
+{
+  "summary_draft": "The current best hypothesis still holds, but the next run should isolate session age from principal drift with an explicit healthcheck path.",
+  "evidence_candidates": [
+    {
+      "artifact_id": "src_001",
+      "kind": "web_page",
+      "source_url": "https://example.com/openai-codex-auth-doc",
+      "title": "Codex auth and session handling notes",
+      "accessed_at": "2026-04-19T11:00:00Z",
+      "extraction_note": "Documentation distinguishes continuity signals from verified principal inspection."
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "claim_001",
+      "text": "A scheduled run must not proceed when session inspection cannot verify both principal identity and workspace policy.",
+      "artifact_ids": [
+        "src_001"
+      ],
+      "temporal_scope": "2026-04-19 onward"
+    }
+  ],
+  "arguments": [
+    {
+      "argument_id": "arg_001",
+      "stance": "support",
+      "target_hypothesis_id": "hyp_001",
+      "claim_ids": [
+        "claim_001"
+      ],
+      "rationale": "Fail-closed handling preserves backend ownership guarantees when credentials drift."
+    }
+  ],
+  "challenger_hypotheses": [
+    {
+      "hypothesis_id": "hyp_002",
+      "title": "Allow warning-only stale session handling",
+      "statement": "If account/read and config/read succeed, stale-session handling may defer renewal without blocking the run.",
+      "status": "proposed"
+    }
+  ],
+  "conflict_assessments": [
+    {
+      "conflict_id": "conf_001",
+      "status": "unresolved",
+      "summary": "More validation is needed to separate recoverable staleness from security-relevant identity drift."
+    }
+  ],
+  "revision_proposals": [
+    {
+      "hypothesis_id": "hyp_001",
+      "action": "strengthen",
+      "rationale": "The current evidence supports stricter run gating until the healthcheck path is validated.",
+      "supersedes_hypothesis_id": null
+    }
+  ],
+  "next_actions": [
+    {
+      "action_id": "next_001",
+      "kind": "gather_evidence",
+      "description": "Compare stale-session outcomes against successful account/read verification in the next scheduled validation run."
+    }
+  ],
+  "execution_meta": {
+    "turn_count": 6,
+    "tool_call_count": 4,
+    "compactions": 1,
+    "repair_attempts": 0
+  }
+}

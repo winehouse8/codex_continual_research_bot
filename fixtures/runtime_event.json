@@ -1,0 +1,12 @@
+{
+  "run_id": "run_2026_04_19_001",
+  "seq": 17,
+  "event_type": "tool.completed",
+  "turn_index": 3,
+  "timestamp": "2026-04-19T11:00:00Z",
+  "payload": {
+    "tool_call_id": "call_008",
+    "tool_name": "web.search",
+    "result_digest": "sha256:2c7ed8e0a3de4977dd4c67d9390fe2e20ce95ccf0df238dab28c166a4630bf46"
+  }
+}

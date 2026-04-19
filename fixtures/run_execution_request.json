@@ -1,0 +1,75 @@
+{
+  "run_id": "run_2026_04_19_001",
+  "topic_id": "topic_codex_auth_boundary",
+  "mode": "interactive",
+  "objective": "Re-evaluate whether Codex auth inspection should block scheduled execution when workspace policy drifts.",
+  "plan": {
+    "must_attack_current_best": true,
+    "must_generate_challenger": true,
+    "must_collect_support_and_challenge": true
+  },
+  "context_snapshot": {
+    "topic_summary": "The topic tracks how the backend should validate Codex session ownership before using a stored session for repeat execution.",
+    "current_best_hypotheses": [
+      {
+        "hypothesis_id": "hyp_001",
+        "title": "Fail closed on workspace drift",
+        "summary": "Scheduled execution must stop when session inspection cannot confirm the configured workspace root."
+      }
+    ],
+    "challenger_targets": [
+      {
+        "hypothesis_id": "hyp_001",
+        "title": "Fail closed on workspace drift",
+        "summary": "Test whether a lighter warning-only path could preserve safety without blocking the queue."
+      }
+    ],
+    "active_conflicts": [
+      {
+        "conflict_id": "conf_001",
+        "summary": "Docs describe both session continuity signals and principal verification, but runtime handling must privilege verified identity."
+      }
+    ],
+    "open_questions": [
+      "Can a stale but still refreshable session skip renewal if account/read succeeds?",
+      "Should healthcheck jobs and run.execute jobs share the same retry envelope?"
+    ],
+    "recent_provenance_digest": "sha256:9b97df16fcd9f6f9d03a6db7aa62892d7db43ef9fd2a3ea7d1cf2f2a054bbef1",
+    "selected_queue_items": [
+      {
+        "queue_item_id": "queue_001",
+        "kind": "run.execute",
+        "summary": "Scheduled follow-up on auth/session ambiguity"
+      }
+    ],
+    "queued_user_inputs": [
+      {
+        "user_input_id": "uin_001",
+        "input_type": "counterargument",
+        "summary": "The system should distinguish recoverable session age from true ownership ambiguity.",
+        "submitted_at": "2026-04-19T10:30:00Z"
+      }
+    ]
+  },
+  "tool_policy": {
+    "allowed_tools": [
+      "web.search",
+      "web.fetch",
+      "internal.graph_query"
+    ],
+    "network_mode": "restricted",
+    "sandbox_mode": "workspace-write"
+  },
+  "output_contract": {
+    "schema_id": "research_run_v1",
+    "max_repair_attempts": 2
+  },
+  "budgets": {
+    "max_turns": 12,
+    "max_tool_calls": 40,
+    "max_runtime_seconds": 1800,
+    "soft_input_tokens": 120000,
+    "hard_input_tokens": 180000
+  },
+  "idempotency_key": "run.execute:run_2026_04_19_001:v1"
+}
