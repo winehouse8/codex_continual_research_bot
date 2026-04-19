@@ -10,6 +10,11 @@
 
 본 문서는 `v1 기준 설계 결정`, `명시적 가정`, `실행 흐름`, `저장 경계`, `실패 복구 경계`를 함께 다룬다.
 
+상세 후속 설계는 아래 문서로 분리한다.
+
+- `RUNTIME.md`: Codex adapter runtime loop, tool registry, output repair, compaction, resume
+- `AUTH_AND_EXECUTION.md`: user-owned Codex auth/session lifecycle, trusted runner boundary, scheduled execution
+
 ## 2. Architecture Summary
 
 한 줄 요약:
@@ -130,6 +135,11 @@ flowchart LR
 - backend가 Codex를 호출하기 위한 단일 진입점
 - interactive / scheduled 실행 모두 동일한 contract로 감싼다
 
+상세 설계 위치:
+
+- runtime loop / tool dispatch / output repair: `RUNTIME.md`
+- OAuth bootstrap / session lease / scheduled execution: `AUTH_AND_EXECUTION.md`
+
 입력:
 
 - topic brief
@@ -152,6 +162,7 @@ flowchart LR
 
 - adapter는 graph를 직접 authoritative하게 수정하지 않는다.
 - adapter 출력은 `proposed state change`이며, 최종 반영은 backend adjudication/persistence layer가 수행한다.
+- adapter는 auth authority도 아니다. user credential lifecycle은 별도 session manager가 소유한다.
 
 ### 5.4 Queue / Worker Layer
 
