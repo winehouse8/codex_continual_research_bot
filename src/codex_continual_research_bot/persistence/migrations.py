@@ -23,6 +23,10 @@ MIGRATIONS = [
         version="0003_phase8_session_auth_boundaries",
         filename="migrations/0003_phase8_session_auth_boundaries.sql",
     ),
+    Migration(
+        version="0004_phase9_interactive_run_path",
+        filename="migrations/0004_phase9_interactive_run_path.sql",
+    ),
 ]
 
 

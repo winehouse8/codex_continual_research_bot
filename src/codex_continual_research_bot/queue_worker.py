@@ -114,6 +114,14 @@ RETRY_MATRIX: Final[dict[FailureCode, RetryPolicy]] = {
         retryable=False,
         human_review_required=False,
     ),
+    FailureCode.INVALID_USER_INPUT: RetryPolicy(
+        retryable=False,
+        human_review_required=False,
+    ),
+    FailureCode.DUPLICATE_TRIGGER_MISMATCH: RetryPolicy(
+        retryable=False,
+        human_review_required=True,
+    ),
     FailureCode.CONCURRENT_SESSION_MUTATION: RetryPolicy(
         retryable=True,
         human_review_required=False,

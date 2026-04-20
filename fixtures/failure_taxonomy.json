@@ -117,5 +117,19 @@
     "retryable": false,
     "human_review_required": true,
     "description": "The same queue item was delivered beyond the allowed idempotency boundary."
+  },
+  {
+    "code": "invalid_user_input",
+    "category": "interactive",
+    "retryable": false,
+    "human_review_required": false,
+    "description": "Interactive user input could not be classified as structured research input."
+  },
+  {
+    "code": "duplicate_trigger_mismatch",
+    "category": "interactive",
+    "retryable": false,
+    "human_review_required": true,
+    "description": "An interactive trigger id was reused with a different request digest."
   }
 ]
