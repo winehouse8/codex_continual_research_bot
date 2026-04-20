@@ -78,6 +78,7 @@ class NextActionKind(str, Enum):
 
 class RuntimeEventType(str, Enum):
     RUN_STARTED = "run.started"
+    CODEX_EVENT = "codex.event"
     TOOL_STARTED = "tool.started"
     TOOL_COMPLETED = "tool.completed"
     OUTPUT_VALIDATED = "output.validated"
@@ -156,6 +157,10 @@ class FailureCode(str, Enum):
     CLI_LOGIN_PATH_BLOCKED = "cli_login_path_blocked"
     OUTPUT_SCHEMA_VALIDATION_FAILED = "output_schema_validation_failed"
     MALFORMED_PROPOSAL = "malformed_proposal"
+    MALFORMED_CODEX_EVENT = "malformed_codex_event"
+    CODEX_TRANSPORT_TIMEOUT = "codex_transport_timeout"
+    CODEX_PROCESS_CRASH = "codex_process_crash"
+    BUDGET_EXCEEDED = "budget_exceeded"
     QUEUE_MUTATION_MISMATCH = "queue_mutation_mismatch"
     DUPLICATE_QUEUE_DELIVERY = "duplicate_queue_delivery"
 
@@ -344,6 +349,12 @@ class RunStartedPayload(StrictModel):
     mode: RunMode
 
 
+class CodexRawEventPayload(StrictModel):
+    raw_event_type: StrictStr = Field(min_length=1)
+    raw_event_digest: StrictStr = Field(min_length=1)
+    artifact_id: StrictStr = Field(min_length=1)
+
+
 class ToolStartedPayload(StrictModel):
     tool_call_id: StrictStr = Field(min_length=1)
     tool_name: StrictStr = Field(min_length=1)
@@ -372,6 +383,7 @@ class RunFailedPayload(StrictModel):
 
 RuntimeEventPayload = (
     RunStartedPayload
+    | CodexRawEventPayload
     | ToolStartedPayload
     | ToolCompletedPayload
     | OutputValidatedPayload
@@ -392,6 +404,7 @@ class RuntimeEvent(StrictModel):
     def validate_payload_matches_event_type(self) -> RuntimeEvent:
         payload_type_by_event = {
             RuntimeEventType.RUN_STARTED: RunStartedPayload,
+            RuntimeEventType.CODEX_EVENT: CodexRawEventPayload,
             RuntimeEventType.TOOL_STARTED: ToolStartedPayload,
             RuntimeEventType.TOOL_COMPLETED: ToolCompletedPayload,
             RuntimeEventType.OUTPUT_VALIDATED: OutputValidatedPayload,

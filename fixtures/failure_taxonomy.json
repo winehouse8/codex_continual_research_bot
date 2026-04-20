@@ -70,6 +70,34 @@
     "description": "The proposal bundle could not be repaired into a valid canonical payload."
   },
   {
+    "code": "malformed_codex_event",
+    "category": "runtime",
+    "retryable": false,
+    "human_review_required": true,
+    "description": "The Codex exec JSONL stream contained a malformed or untyped event."
+  },
+  {
+    "code": "codex_transport_timeout",
+    "category": "runtime",
+    "retryable": true,
+    "human_review_required": false,
+    "description": "The Codex exec process exceeded the backend-owned runtime deadline."
+  },
+  {
+    "code": "codex_process_crash",
+    "category": "runtime",
+    "retryable": true,
+    "human_review_required": false,
+    "description": "The Codex exec process exited unsuccessfully or failed to write the final artifact."
+  },
+  {
+    "code": "budget_exceeded",
+    "category": "runtime",
+    "retryable": false,
+    "human_review_required": true,
+    "description": "The runtime request exceeded a backend-owned budget before launch."
+  },
+  {
     "code": "queue_mutation_mismatch",
     "category": "queue",
     "retryable": false,

@@ -83,6 +83,24 @@ RETRY_MATRIX: Final[dict[FailureCode, RetryPolicy]] = {
         retryable=False,
         human_review_required=True,
     ),
+    FailureCode.MALFORMED_CODEX_EVENT: RetryPolicy(
+        retryable=False,
+        human_review_required=True,
+    ),
+    FailureCode.CODEX_TRANSPORT_TIMEOUT: RetryPolicy(
+        retryable=True,
+        human_review_required=False,
+        base_backoff_seconds=60,
+    ),
+    FailureCode.CODEX_PROCESS_CRASH: RetryPolicy(
+        retryable=True,
+        human_review_required=False,
+        base_backoff_seconds=60,
+    ),
+    FailureCode.BUDGET_EXCEEDED: RetryPolicy(
+        retryable=False,
+        human_review_required=True,
+    ),
     FailureCode.QUEUE_MUTATION_MISMATCH: RetryPolicy(
         retryable=False,
         human_review_required=True,
