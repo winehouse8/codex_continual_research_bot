@@ -59,3 +59,7 @@ This matrix defines the minimum validation evidence for the topic snapshot read 
 | `test_stale_snapshot_version_mismatch_rejected` | snapshot version gate | Runtime persists decisions based on stale topic context |
 | `test_current_best_attack_omitted_proposal_rejected` | minimum proposal competition gate | Support-only research output proceeds without attacking current best |
 | `test_challenger_target_attack_does_not_satisfy_current_best_gate` | current-best attack target specificity | A challenge against a non-current-best target satisfies the current-best attack requirement |
+| `test_challenger_generation_omitted_proposal_rejected` | challenger generation gate | Runtime output proceeds without producing a competing hypothesis |
+| `test_support_argument_omitted_proposal_rejected` | support-plus-challenge evidence gate | Challenge-only output proceeds without support evidence for selected targets |
+| `test_reconciliation_or_retirement_pressure_omitted_proposal_rejected` | reconciliation / retirement pressure gate | Runtime output proceeds without conflict reconciliation, escalation, or hypothesis weakening / retirement pressure |
+| `test_complete_competition_proposal_is_accepted` | full proposal gate acceptance | Valid competition output is over-rejected by the Phase 3 gate |

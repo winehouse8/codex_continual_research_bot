@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -124,6 +125,20 @@ def make_ledger(
         )
     )
     return ledger
+
+
+def proposal_data_with_current_best_challenge() -> dict[str, Any]:
+    proposal_data = json.loads((ROOT / "fixtures" / "proposal_bundle.json").read_text())
+    proposal_data["arguments"].append(
+        {
+            "argument_id": "arg_002",
+            "stance": "challenge",
+            "target_hypothesis_id": "hyp_001",
+            "claim_ids": ["claim_001"],
+            "rationale": "The run must pressure-test the current best hypothesis.",
+        }
+    )
+    return proposal_data
 
 
 def test_happy_path_state_transition_builds_runtime_intent(tmp_path: Path) -> None:
@@ -345,6 +360,26 @@ def test_challenger_target_attack_does_not_satisfy_current_best_gate(
         )
 
 
+def test_challenger_generation_omitted_proposal_rejected(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    orchestrator = RunOrchestrator(ledger)
+    intent = orchestrator.start_queued_run(
+        queue_item_id="queue_001",
+        run_id="run_001",
+        worker_id="worker-a",
+    )
+    proposal_data = proposal_data_with_current_best_challenge()
+    proposal_data["challenger_hypotheses"] = []
+    proposal_data["revision_proposals"][0]["action"] = "weaken"
+    proposal = ProposalBundle.model_validate(proposal_data)
+
+    with pytest.raises(CompetitionValidationError, match="challenger hypothesis"):
+        orchestrator.validate_proposal_for_competition(
+            intent=intent,
+            proposal=proposal,
+        )
+
+
 def test_support_argument_omitted_proposal_rejected(tmp_path: Path) -> None:
     ledger = make_ledger(tmp_path)
     orchestrator = RunOrchestrator(ledger)
@@ -370,3 +405,40 @@ def test_support_argument_omitted_proposal_rejected(tmp_path: Path) -> None:
             intent=intent,
             proposal=proposal,
         )
+
+
+def test_reconciliation_or_retirement_pressure_omitted_proposal_rejected(
+    tmp_path: Path,
+) -> None:
+    ledger = make_ledger(tmp_path)
+    orchestrator = RunOrchestrator(ledger)
+    intent = orchestrator.start_queued_run(
+        queue_item_id="queue_001",
+        run_id="run_001",
+        worker_id="worker-a",
+    )
+    proposal = ProposalBundle.model_validate(proposal_data_with_current_best_challenge())
+
+    with pytest.raises(CompetitionValidationError, match="reconcile"):
+        orchestrator.validate_proposal_for_competition(
+            intent=intent,
+            proposal=proposal,
+        )
+
+
+def test_complete_competition_proposal_is_accepted(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    orchestrator = RunOrchestrator(ledger)
+    intent = orchestrator.start_queued_run(
+        queue_item_id="queue_001",
+        run_id="run_001",
+        worker_id="worker-a",
+    )
+    proposal_data = proposal_data_with_current_best_challenge()
+    proposal_data["revision_proposals"][0]["action"] = "weaken"
+    proposal = ProposalBundle.model_validate(proposal_data)
+
+    orchestrator.validate_proposal_for_competition(
+        intent=intent,
+        proposal=proposal,
+    )
