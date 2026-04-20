@@ -394,7 +394,7 @@ class RunOrchestrator:
         attack_target_ids = current_best_ids | challenger_target_ids
         has_current_best_attack = any(
             argument.stance == ArgumentStance.CHALLENGE
-            and argument.target_hypothesis_id in attack_target_ids
+            and argument.target_hypothesis_id in current_best_ids
             for argument in proposal.arguments
         )
         if intent.frontier.requires_current_best_attack and not has_current_best_attack:

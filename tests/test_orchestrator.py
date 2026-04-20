@@ -53,7 +53,11 @@ def make_queue_job(
     )
 
 
-def make_topic_snapshot(*, version: int = 1) -> TopicSnapshot:
+def make_topic_snapshot(
+    *,
+    version: int = 1,
+    challenger_target_id: str = "hyp_001",
+) -> TopicSnapshot:
     return TopicSnapshot.model_validate(
         {
             "topic_id": "topic_001",
@@ -68,7 +72,7 @@ def make_topic_snapshot(*, version: int = 1) -> TopicSnapshot:
             ],
             "challenger_targets": [
                 {
-                    "hypothesis_id": "hyp_001",
+                    "hypothesis_id": challenger_target_id,
                     "title": "Fail closed on weak competition",
                     "summary": "Use this current best hypothesis as the attack target.",
                 }
@@ -101,12 +105,13 @@ def make_ledger(
     with_snapshot: bool = True,
     queue_item_id: str = "queue_001",
     idempotency_key: str = "run.execute:run_001:v1",
+    snapshot: TopicSnapshot | None = None,
 ) -> SQLitePersistenceLedger:
     ledger = SQLitePersistenceLedger(tmp_path / "phase3.sqlite3")
     ledger.initialize()
     ledger.create_topic(topic_id="topic_001", slug="phase-3", title="Phase 3")
     if with_snapshot:
-        ledger.store_topic_snapshot(make_topic_snapshot())
+        ledger.store_topic_snapshot(snapshot or make_topic_snapshot())
     ledger.reserve_idempotency_key(
         idempotency_key=idempotency_key,
         scope="run.execute",
@@ -279,6 +284,43 @@ def test_current_best_attack_omitted_proposal_rejected(tmp_path: Path) -> None:
     proposal = ProposalBundle.model_validate(
         json.loads((ROOT / "fixtures" / "proposal_bundle.json").read_text())
     )
+
+    with pytest.raises(CompetitionValidationError, match="challenge argument"):
+        orchestrator.validate_proposal_for_competition(
+            intent=intent,
+            proposal=proposal,
+        )
+
+
+def test_challenger_target_attack_does_not_satisfy_current_best_gate(
+    tmp_path: Path,
+) -> None:
+    snapshot = make_topic_snapshot(challenger_target_id="hyp_999")
+    ledger = make_ledger(tmp_path, snapshot=snapshot)
+    orchestrator = RunOrchestrator(ledger)
+    intent = orchestrator.start_queued_run(
+        queue_item_id="queue_001",
+        run_id="run_001",
+        worker_id="worker-a",
+    )
+    proposal_data = json.loads((ROOT / "fixtures" / "proposal_bundle.json").read_text())
+    proposal_data["arguments"] = [
+        {
+            "argument_id": "arg_001",
+            "stance": "support",
+            "target_hypothesis_id": "hyp_001",
+            "claim_ids": ["claim_001"],
+            "rationale": "The run supports the current best hypothesis.",
+        },
+        {
+            "argument_id": "arg_002",
+            "stance": "challenge",
+            "target_hypothesis_id": "hyp_999",
+            "claim_ids": ["claim_001"],
+            "rationale": "The run challenges only a non-current-best target.",
+        },
+    ]
+    proposal = ProposalBundle.model_validate(proposal_data)
 
     with pytest.raises(CompetitionValidationError, match="challenge argument"):
         orchestrator.validate_proposal_for_competition(

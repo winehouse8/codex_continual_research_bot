@@ -58,3 +58,4 @@ This matrix defines the minimum validation evidence for the topic snapshot read 
 | `test_queue_item_to_run_intent_mapping` | queue row to `FrontierSelectionInput` / `RunExecutionRequest` mapping | Queue objective or idempotency key is dropped from runtime intent |
 | `test_stale_snapshot_version_mismatch_rejected` | snapshot version gate | Runtime persists decisions based on stale topic context |
 | `test_current_best_attack_omitted_proposal_rejected` | minimum proposal competition gate | Support-only research output proceeds without attacking current best |
+| `test_challenger_target_attack_does_not_satisfy_current_best_gate` | current-best attack target specificity | A challenge against a non-current-best target satisfies the current-best attack requirement |
