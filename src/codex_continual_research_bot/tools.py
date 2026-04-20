@@ -341,6 +341,7 @@ class ToolExecutorWrapper:
         policy: ToolPolicy,
     ) -> NormalizedToolResult:
         try:
+            _validate_context_matches_policy(context=context, policy=policy)
             manifest = self._policy_validator.validate_tool_allowed(
                 tool_name=call.tool_name,
                 policy=policy,
@@ -509,6 +510,23 @@ def _ensure_within_workspace(*, root: Path, workspace_root: Path) -> None:
     if resolved != workspace and workspace not in resolved.parents:
         raise ToolPolicyViolation(
             f"writable root escapes workspace boundary: {resolved} not under {workspace}"
+        )
+
+
+def _validate_context_matches_policy(
+    *,
+    context: ToolExecutionContext,
+    policy: ToolPolicy,
+) -> None:
+    if context.network_mode != policy.network_mode:
+        raise ToolPolicyViolation(
+            "execution context network mode does not match runtime policy: "
+            f"{context.network_mode.value} != {policy.network_mode.value}"
+        )
+    if context.sandbox_mode != policy.sandbox_mode:
+        raise ToolPolicyViolation(
+            "execution context sandbox mode does not match runtime policy: "
+            f"{context.sandbox_mode.value} != {policy.sandbox_mode.value}"
         )
 
 

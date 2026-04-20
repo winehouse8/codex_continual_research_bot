@@ -36,10 +36,18 @@ def runtime_policy(*, allowed_tools: list[str] | None = None) -> ToolPolicy:
     )
 
 
-def context(tmp_path: Path, *, writable_roots: tuple[Path, ...] = ()) -> ToolExecutionContext:
+def context(
+    tmp_path: Path,
+    *,
+    network_mode: NetworkMode = NetworkMode.RESTRICTED,
+    sandbox_mode: SandboxMode = SandboxMode.WORKSPACE_WRITE,
+    writable_roots: tuple[Path, ...] = (),
+) -> ToolExecutionContext:
     return ToolExecutionContext(
         run_id="run_001",
         workspace_root=tmp_path,
+        network_mode=network_mode,
+        sandbox_mode=sandbox_mode,
         writable_roots=writable_roots,
     )
 
@@ -243,6 +251,61 @@ def test_permission_boundary_blocks_writable_roots_outside_workspace(tmp_path: P
             policy=runtime_policy(allowed_tools=["internal.note_write"]),
             writable_roots=(outside,),
         )
+
+
+def test_executor_rejects_network_context_policy_mismatch_and_audits(
+    tmp_path: Path,
+) -> None:
+    audit = DeniedCallAuditLog()
+    executor = ToolExecutorWrapper(
+        build_default_tool_registry(),
+        workspace_root=tmp_path,
+        audit_log=audit,
+    )
+    executor.register_handler("web.search", lambda args: {"summary": "x", "artifacts": []})
+
+    with pytest.raises(ToolPolicyViolation, match="network mode does not match"):
+        executor.dispatch(
+            ToolCall(
+                tool_call_id="call_001",
+                tool_name="web.search",
+                args={"query": "belief revision"},
+            ),
+            context=context(tmp_path, network_mode=NetworkMode.OPEN),
+            policy=runtime_policy(),
+        )
+
+    assert len(audit.records) == 1
+    assert "network mode does not match" in audit.records[0].reason
+
+
+def test_executor_rejects_sandbox_context_policy_mismatch_and_audits(
+    tmp_path: Path,
+) -> None:
+    audit = DeniedCallAuditLog()
+    executor = ToolExecutorWrapper(
+        build_default_tool_registry(),
+        workspace_root=tmp_path,
+        audit_log=audit,
+    )
+    executor.register_handler(
+        "internal.graph_query",
+        lambda args: {"summary": "graph snapshot"},
+    )
+
+    with pytest.raises(ToolPolicyViolation, match="sandbox mode does not match"):
+        executor.dispatch(
+            ToolCall(
+                tool_call_id="call_001",
+                tool_name="internal.graph_query",
+                args={"topic_id": "topic_001"},
+            ),
+            context=context(tmp_path, sandbox_mode=SandboxMode.DISABLED),
+            policy=runtime_policy(),
+        )
+
+    assert len(audit.records) == 1
+    assert "sandbox mode does not match" in audit.records[0].reason
 
 
 def test_tool_output_drift_is_normalized_before_downstream(tmp_path: Path) -> None:
