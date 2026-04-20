@@ -161,7 +161,7 @@ class ScheduledRunService:
         self._session_id = session_id
         self._host_id = host_id
         self._worker_id = worker_id
-        self._policy = policy or ScheduledRunPolicy(trusted_host_ids=frozenset({host_id}))
+        self._policy = policy or ScheduledRunPolicy(trusted_host_ids=frozenset())
         self._scheduler = scheduler or SchedulerPolicyEvaluator()
         self._healthcheck = healthcheck or SessionHealthcheckJob(session_manager)
         self._canonicalizer = canonicalizer or CanonicalGraphService()

@@ -352,6 +352,36 @@ def test_happy_path_scheduled_e2e_reuses_validation_and_persistence(
     assert result.report.backend_state_update.graph_digest == graph_write["graph_digest"]
 
 
+def test_default_policy_rejects_headless_run_without_trusted_host(
+    tmp_path: Path,
+) -> None:
+    ledger = make_ledger(tmp_path)
+    manager = bootstrap_manager(tmp_path, ledger)
+    runtime = FakeScheduledRuntime(make_valid_proposal())
+    service = ScheduledRunService(
+        ledger,
+        session_manager=manager,
+        runtime=runtime,
+        session_id="sess_001",
+        host_id="runner-seoul-01",
+    )
+
+    result = service.execute_item(
+        queue_item_id="scheduled_queue_001",
+        run_id="scheduled_run_001",
+        load_inspection=lambda: make_inspection(tmp_path),
+        now=NOW,
+    )
+
+    queue = ledger.fetch_queue_item("scheduled_queue_001")
+    assert queue is not None
+    assert result.action == ScheduledRunAction.TERMINAL_FAILED
+    assert result.failure_code == FailureCode.EXECUTION_POLICY_REJECTED
+    assert queue["state"] == QueueJobState.DEAD_LETTER.value
+    assert ledger.fetch_run("scheduled_run_001") is None
+    assert runtime.intents == []
+
+
 def test_session_expired_preflight_rejects_before_run_and_notifies(
     tmp_path: Path,
 ) -> None:
