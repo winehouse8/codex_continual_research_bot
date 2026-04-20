@@ -9,6 +9,7 @@
 - `idempotency_keys`: write ledger that rejects duplicate execution keys at the database boundary.
 - `runs`: one run row per claimed queue item, linked to the queue item and idempotency key.
 - `run_events`: append-only runtime event ledger guarded by `UPDATE`/`DELETE` denial triggers.
+- `topic_snapshots`: strict Phase 3 topic read model snapshots keyed by `(topic_id, snapshot_version)`.
 - `session_ledger`, `session_leases`, `session_events`: session authority, active lease tracking, and append-only session audit trail.
 - `scheduler_policies`: per-topic scheduler policy state.
 
@@ -18,6 +19,7 @@
 - `runs.id` is the authoritative run identifier created inside `claim_next_queue_item_for_run(...)`.
 - `runs.queue_item_id` is the canonical audit join from a queue row to the actual claimed run row.
 - `idempotency_keys.run_id` is filled only when the queue item is claimed and must match `runs.id`.
+- `runs.snapshot_version` is filled when the orchestrator successfully loads the latest topic snapshot before runtime execution.
 
 ## Transaction Boundary
 

@@ -10,6 +10,7 @@ import pytest
 from codex_continual_research_bot.contracts import (
     QueueJob,
     QueueJobState,
+    RunLifecycleState,
     RunFailedPayload,
     RuntimeEvent,
     RuntimeEventType,
@@ -17,6 +18,7 @@ from codex_continual_research_bot.contracts import (
 from codex_continual_research_bot.persistence import (
     DuplicateIdempotencyKeyError,
     SQLitePersistenceLedger,
+    StaleRunStateError,
 )
 
 
@@ -57,7 +59,10 @@ def test_happy_path_migration_creates_phase1_tables(tmp_path: Path) -> None:
 
     applied = ledger.initialize()
 
-    assert applied == ["0001_phase1_relational_ledger"]
+    assert applied == [
+        "0001_phase1_relational_ledger",
+        "0002_phase3_topic_snapshot_orchestrator",
+    ]
     with ledger.connect() as connection:
         tables = {
             row["name"]
@@ -76,6 +81,7 @@ def test_happy_path_migration_creates_phase1_tables(tmp_path: Path) -> None:
         "session_leases",
         "session_events",
         "scheduler_policies",
+        "topic_snapshots",
     } <= tables
 
 
@@ -85,7 +91,10 @@ def test_migration_rerun_is_idempotent(tmp_path: Path) -> None:
     first = ledger.initialize()
     second = ledger.initialize()
 
-    assert first == ["0001_phase1_relational_ledger"]
+    assert first == [
+        "0001_phase1_relational_ledger",
+        "0002_phase3_topic_snapshot_orchestrator",
+    ]
     assert second == []
 
 
@@ -216,6 +225,39 @@ def test_concurrent_dequeue_claim_race_allows_single_winner(tmp_path: Path) -> N
     idempotency_record = ledger.get_idempotency_record("idem_001")
     assert idempotency_record is not None
     assert idempotency_record["run_id"] in {"run_a", "run_b"}
+
+
+def test_guarded_run_transition_rejects_stale_source_state(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    ledger.reserve_idempotency_key(
+        idempotency_key="idem_001",
+        scope="run.execute",
+        request_digest="sha256:queue_001",
+    )
+    ledger.enqueue_job(make_queue_job())
+    claimed = ledger.claim_next_queue_item_for_run(
+        worker_id="worker-a",
+        run_id="run_001",
+        mode="scheduled",
+    )
+    assert claimed is not None
+
+    ledger.transition_run_state(
+        run_id="run_001",
+        state=RunLifecycleState.LOADING_STATE,
+        expected_state=RunLifecycleState.QUEUED,
+    )
+
+    with pytest.raises(StaleRunStateError, match="moved from queued to loading_state"):
+        ledger.transition_run_state(
+            run_id="run_001",
+            state=RunLifecycleState.FAILED,
+            expected_state=RunLifecycleState.QUEUED,
+        )
+
+    run = ledger.fetch_run("run_001")
+    assert run is not None
+    assert run["status"] == RunLifecycleState.LOADING_STATE.value
 
 
 def test_claim_links_idempotency_record_to_run(tmp_path: Path) -> None:
