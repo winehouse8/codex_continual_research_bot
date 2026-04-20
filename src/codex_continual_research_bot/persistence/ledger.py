@@ -535,6 +535,31 @@ class SQLitePersistenceLedger:
         except sqlite3.IntegrityError as exc:
             raise DuplicateRunEventError(f"{event.run_id}:{event.seq}") from exc
 
+    def list_run_events(self, run_id: str) -> list[RuntimeEvent]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT run_id, seq, event_type, turn_index, timestamp, payload_json
+                FROM run_events
+                WHERE run_id = ?
+                ORDER BY seq ASC
+                """,
+                (run_id,),
+            ).fetchall()
+        return [
+            RuntimeEvent.model_validate(
+                {
+                    "run_id": row["run_id"],
+                    "seq": row["seq"],
+                    "event_type": row["event_type"],
+                    "turn_index": row["turn_index"],
+                    "timestamp": row["timestamp"],
+                    "payload": json.loads(row["payload_json"]),
+                }
+            )
+            for row in rows
+        ]
+
     def transition_run_state(
         self,
         *,

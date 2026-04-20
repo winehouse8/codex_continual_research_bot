@@ -27,6 +27,7 @@ from codex_continual_research_bot.persistence import (
     QueueMutationMismatchError,
     SQLitePersistenceLedger,
 )
+from codex_continual_research_bot.runtime import CodexRuntimeError
 
 
 def _utcnow() -> datetime:
@@ -80,6 +81,28 @@ RETRY_MATRIX: Final[dict[FailureCode, RetryPolicy]] = {
         human_review_required=True,
     ),
     FailureCode.MALFORMED_PROPOSAL: RetryPolicy(
+        retryable=False,
+        human_review_required=True,
+    ),
+    FailureCode.MALFORMED_CODEX_EVENT: RetryPolicy(
+        retryable=False,
+        human_review_required=True,
+    ),
+    FailureCode.CODEX_TRANSPORT_TIMEOUT: RetryPolicy(
+        retryable=True,
+        human_review_required=False,
+        base_backoff_seconds=60,
+    ),
+    FailureCode.CODEX_PROCESS_CRASH: RetryPolicy(
+        retryable=True,
+        human_review_required=False,
+        base_backoff_seconds=60,
+    ),
+    FailureCode.BUDGET_EXCEEDED: RetryPolicy(
+        retryable=False,
+        human_review_required=True,
+    ),
+    FailureCode.EXECUTION_POLICY_REJECTED: RetryPolicy(
         retryable=False,
         human_review_required=True,
     ),
@@ -236,6 +259,21 @@ class QueueWorker:
                 now=now,
             )
         except TerminalQueueWorkerError as exc:
+            return self._dead_letter(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                failure_code=exc.failure_code,
+                detail=exc.detail,
+            )
+        except CodexRuntimeError as exc:
+            if exc.retryable:
+                return self._nack(
+                    queue_item_id=queue_item_id,
+                    run_id=run_id,
+                    failure_code=exc.failure_code,
+                    detail=exc.detail,
+                    now=now,
+                )
             return self._dead_letter(
                 queue_item_id=queue_item_id,
                 run_id=run_id,
