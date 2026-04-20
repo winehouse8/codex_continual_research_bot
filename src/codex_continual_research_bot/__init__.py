@@ -21,7 +21,9 @@ from .graph_canonicalization import (
 )
 from .orchestrator import (
     CompetitionValidationError,
+    InvalidTopicSnapshotError,
     InvalidRunTransitionError,
+    MalformedRunInputError,
     MissingTopicSnapshotError,
     RunOrchestrator,
     RunStateMachine,
@@ -36,7 +38,9 @@ __all__ = [
     "FailureCode",
     "FrontierSelectionInput",
     "HypothesisSnapshot",
+    "InvalidTopicSnapshotError",
     "InvalidRunTransitionError",
+    "MalformedRunInputError",
     "MissingTopicSnapshotError",
     "ProposalBundle",
     "QueueJob",

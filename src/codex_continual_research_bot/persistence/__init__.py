@@ -5,7 +5,9 @@ from .ledger import (
     DuplicateIdempotencyKeyError,
     DuplicateRunStartError,
     DuplicateRunEventError,
+    MalformedTopicSnapshotError,
     SQLitePersistenceLedger,
+    StaleRunStateError,
 )
 from .migrations import apply_migrations
 
@@ -14,6 +16,8 @@ __all__ = [
     "DuplicateIdempotencyKeyError",
     "DuplicateRunStartError",
     "DuplicateRunEventError",
+    "MalformedTopicSnapshotError",
     "SQLitePersistenceLedger",
+    "StaleRunStateError",
     "apply_migrations",
 ]

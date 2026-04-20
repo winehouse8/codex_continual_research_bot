@@ -24,7 +24,11 @@ from codex_continual_research_bot.contracts import (
     NetworkMode,
     TopicSnapshot,
 )
-from codex_continual_research_bot.persistence import SQLitePersistenceLedger
+from codex_continual_research_bot.persistence import (
+    MalformedTopicSnapshotError,
+    SQLitePersistenceLedger,
+    StaleRunStateError,
+)
 
 
 class RunOrchestratorError(RuntimeError):
@@ -43,6 +47,14 @@ class StaleTopicSnapshotError(RunOrchestratorError):
     """Raised when the caller tries to run against an older snapshot version."""
 
 
+class InvalidTopicSnapshotError(RunOrchestratorError):
+    """Raised when a topic snapshot cannot support the Phase 3 run contract."""
+
+
+class MalformedRunInputError(RunOrchestratorError):
+    """Raised when persisted queue input cannot build a run intent."""
+
+
 class CompetitionValidationError(RunOrchestratorError):
     """Raised when a proposal does not satisfy the minimum competition loop."""
 
@@ -52,7 +64,9 @@ STATE_TRANSITIONS: Final[dict[RunLifecycleState, frozenset[RunLifecycleState]]] 
     RunLifecycleState.LOADING_STATE: frozenset(
         {RunLifecycleState.SELECTING_FRONTIER, RunLifecycleState.FAILED}
     ),
-    RunLifecycleState.SELECTING_FRONTIER: frozenset({RunLifecycleState.PLANNING}),
+    RunLifecycleState.SELECTING_FRONTIER: frozenset(
+        {RunLifecycleState.PLANNING, RunLifecycleState.FAILED}
+    ),
     RunLifecycleState.PLANNING: frozenset({RunLifecycleState.ATTACKING_CURRENT_BEST}),
     RunLifecycleState.ATTACKING_CURRENT_BEST: frozenset(
         {RunLifecycleState.GENERATING_CHALLENGERS}
@@ -86,6 +100,16 @@ STATE_TRANSITIONS: Final[dict[RunLifecycleState, frozenset[RunLifecycleState]]] 
     RunLifecycleState.COMPLETED: frozenset(),
     RunLifecycleState.DEAD_LETTER: frozenset(),
 }
+RUNTIME_RESUMABLE_STATES: Final[frozenset[RunLifecycleState]] = frozenset(
+    {
+        RunLifecycleState.CODEX_EXECUTING,
+        RunLifecycleState.NORMALIZING,
+        RunLifecycleState.ADJUDICATING,
+        RunLifecycleState.RETIRING_WEAK_HYPOTHESES,
+        RunLifecycleState.PERSISTING,
+        RunLifecycleState.SUMMARIZING,
+    }
+)
 
 
 DEFAULT_TOOL_POLICY: Final = ToolPolicy(
@@ -128,11 +152,17 @@ class RunStateMachine:
             raise InvalidRunTransitionError(
                 f"cannot transition run {run_id} from {from_state.value} to {to_state.value}"
             )
-        self._ledger.transition_run_state(
-            run_id=run_id,
-            state=to_state,
-            snapshot_version=snapshot_version,
-        )
+        try:
+            self._ledger.transition_run_state(
+                run_id=run_id,
+                state=to_state,
+                snapshot_version=snapshot_version,
+                expected_state=from_state,
+            )
+        except StaleRunStateError as exc:
+            raise InvalidRunTransitionError(
+                f"run {run_id} changed during transition from {from_state.value}"
+            ) from exc
 
 
 class RunOrchestrator:
@@ -188,7 +218,13 @@ class RunOrchestrator:
                 topic_id=claimed.topic_id,
                 expected_snapshot_version=expected_snapshot_version,
             )
-        except (MissingTopicSnapshotError, StaleTopicSnapshotError):
+            self.validate_topic_snapshot_for_run(snapshot)
+        except (
+            InvalidTopicSnapshotError,
+            MalformedTopicSnapshotError,
+            MissingTopicSnapshotError,
+            StaleTopicSnapshotError,
+        ):
             self._state_machine.transition(
                 run_id=run_id,
                 to_state=RunLifecycleState.FAILED,
@@ -200,10 +236,17 @@ class RunOrchestrator:
             to_state=RunLifecycleState.SELECTING_FRONTIER,
             snapshot_version=snapshot.snapshot_version,
         )
-        frontier = self.build_frontier_selection_input(
-            snapshot=snapshot,
-            queue_item_id=claimed.queue_item_id,
-        )
+        try:
+            frontier = self.build_frontier_selection_input(
+                snapshot=snapshot,
+                queue_item_id=claimed.queue_item_id,
+            )
+        except MalformedRunInputError:
+            self._state_machine.transition(
+                run_id=run_id,
+                to_state=RunLifecycleState.FAILED,
+            )
+            raise
         self._state_machine.transition(
             run_id=run_id,
             to_state=RunLifecycleState.PLANNING,
@@ -221,13 +264,20 @@ class RunOrchestrator:
             to_state=RunLifecycleState.CODEX_EXECUTING,
         )
 
-        return self.build_run_intent(
-            run_id=run_id,
-            queue_item_id=claimed.queue_item_id,
-            mode=mode,
-            snapshot=snapshot,
-            frontier=frontier,
-        )
+        try:
+            return self.build_run_intent(
+                run_id=run_id,
+                queue_item_id=claimed.queue_item_id,
+                mode=mode,
+                snapshot=snapshot,
+                frontier=frontier,
+            )
+        except MalformedRunInputError:
+            self._state_machine.transition(
+                run_id=run_id,
+                to_state=RunLifecycleState.FAILED,
+            )
+            raise
 
     def resume_run(
         self,
@@ -245,8 +295,16 @@ class RunOrchestrator:
             )
         if state in {RunLifecycleState.COMPLETED, RunLifecycleState.DEAD_LETTER}:
             raise InvalidRunTransitionError(f"run {run_id} is terminal")
+        if state not in RUNTIME_RESUMABLE_STATES:
+            raise InvalidRunTransitionError(
+                f"run {run_id} is not ready for runtime resume from {state.value}"
+            )
 
         snapshot_version = run.get("snapshot_version")
+        if snapshot_version is None:
+            raise InvalidRunTransitionError(
+                f"run {run_id} has no pinned snapshot version for resume"
+            )
         if (
             snapshot_version is not None
             and expected_snapshot_version is not None
@@ -263,6 +321,7 @@ class RunOrchestrator:
                 None if snapshot_version is not None else expected_snapshot_version
             ),
         )
+        self.validate_topic_snapshot_for_run(snapshot)
         frontier = self.build_frontier_selection_input(
             snapshot=snapshot,
             queue_item_id=run["queue_item_id"],
@@ -304,8 +363,15 @@ class RunOrchestrator:
             raise StaleTopicSnapshotError(
                 "snapshot version mismatch: "
                 f"expected {expected_snapshot_version}, latest is {latest.snapshot_version}"
-            )
+        )
         return latest
+
+    def validate_topic_snapshot_for_run(self, snapshot: TopicSnapshot) -> None:
+        if not snapshot.current_best_hypotheses:
+            raise InvalidTopicSnapshotError(
+                f"topic {snapshot.topic_id} snapshot {snapshot.snapshot_version} "
+                "has no current-best hypothesis to attack"
+            )
 
     def build_frontier_selection_input(
         self,
@@ -313,6 +379,7 @@ class RunOrchestrator:
         snapshot: TopicSnapshot,
         queue_item_id: str,
     ) -> FrontierSelectionInput:
+        self.validate_topic_snapshot_for_run(snapshot)
         selected_queue_items = [self._queue_selection_from_row(queue_item_id)]
         return FrontierSelectionInput(
             topic_id=snapshot.topic_id,
@@ -338,7 +405,7 @@ class RunOrchestrator:
         frontier: FrontierSelectionInput,
     ) -> RunIntent:
         queue_row = self._require_queue_row(queue_item_id)
-        payload = json.loads(queue_row["payload_json"])
+        payload = self._queue_payload(queue_row)
         request = RunExecutionRequest(
             run_id=run_id,
             topic_id=snapshot.topic_id,
@@ -396,27 +463,32 @@ class RunOrchestrator:
             for hypothesis in intent.frontier.challenger_targets
         }
         attack_target_ids = current_best_ids | challenger_target_ids
-        has_current_best_attack = any(
-            argument.stance == ArgumentStance.CHALLENGE
+        challenged_current_best_ids = {
+            argument.target_hypothesis_id
+            for argument in proposal.arguments
+            if argument.stance == ArgumentStance.CHALLENGE
             and argument.target_hypothesis_id in current_best_ids
-            for argument in proposal.arguments
-        )
-        if intent.frontier.requires_current_best_attack and not has_current_best_attack:
-            raise CompetitionValidationError(
-                "proposal must include a challenge argument against the current best hypothesis"
-            )
-
-        has_support_argument = any(
-            argument.stance == ArgumentStance.SUPPORT
-            and argument.target_hypothesis_id in attack_target_ids
-            for argument in proposal.arguments
-        )
+        }
         if (
-            intent.execution_request.plan.must_collect_support_and_challenge
-            and not has_support_argument
+            intent.frontier.requires_current_best_attack
+            and challenged_current_best_ids != current_best_ids
         ):
             raise CompetitionValidationError(
-                "proposal must include support and challenge arguments for the selected hypothesis targets"
+                "proposal must include a challenge argument against each current best hypothesis"
+            )
+
+        supported_current_best_ids = {
+            argument.target_hypothesis_id
+            for argument in proposal.arguments
+            if argument.stance == ArgumentStance.SUPPORT
+            and argument.target_hypothesis_id in current_best_ids
+        }
+        if (
+            intent.execution_request.plan.must_collect_support_and_challenge
+            and supported_current_best_ids != current_best_ids
+        ):
+            raise CompetitionValidationError(
+                "proposal must include support and challenge arguments for each current best hypothesis"
             )
 
         if (
@@ -427,8 +499,12 @@ class RunOrchestrator:
                 "proposal must generate at least one challenger hypothesis"
             )
 
+        active_conflict_ids = {
+            conflict.conflict_id for conflict in intent.frontier.active_conflicts
+        }
         has_reconciliation = any(
             assessment.status in {ConflictStatus.RECONCILED, ConflictStatus.ESCALATED}
+            and assessment.conflict_id in active_conflict_ids
             for assessment in proposal.conflict_assessments
         )
         has_retirement_or_revision_pressure = any(
@@ -438,6 +514,7 @@ class RunOrchestrator:
                 RevisionAction.RETIRE,
                 RevisionAction.SUPERSEDE,
             }
+            and revision.hypothesis_id in attack_target_ids
             for revision in proposal.revision_proposals
         )
         if (
@@ -449,14 +526,42 @@ class RunOrchestrator:
                 "proposal must reconcile, escalate, weaken, retire, or supersede a hypothesis"
             )
 
+    def accept_competition_proposal(
+        self,
+        *,
+        intent: RunIntent,
+        proposal: ProposalBundle,
+    ) -> None:
+        self.validate_proposal_for_competition(intent=intent, proposal=proposal)
+        self._state_machine.transition(
+            run_id=intent.run_id,
+            to_state=RunLifecycleState.NORMALIZING,
+        )
+
     def _queue_selection_from_row(self, queue_item_id: str) -> QueueSelection:
         row = self._require_queue_row(queue_item_id)
-        payload = json.loads(row["payload_json"])
+        payload = self._queue_payload(row)
         return QueueSelection(
             queue_item_id=row["id"],
             kind=row["kind"],
             summary=payload["objective"],
         )
+
+    def _queue_payload(self, row: dict[str, Any]) -> dict[str, Any]:
+        try:
+            payload = json.loads(row["payload_json"])
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise MalformedRunInputError(
+                f"queue item {row['id']} has malformed payload JSON"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise MalformedRunInputError(f"queue item {row['id']} payload must be an object")
+        objective = payload.get("objective")
+        if not isinstance(objective, str) or not objective:
+            raise MalformedRunInputError(
+                f"queue item {row['id']} payload must include a non-empty objective"
+            )
+        return payload
 
     def _require_queue_row(self, queue_item_id: str) -> dict[str, Any]:
         row = self._ledger.fetch_queue_item(queue_item_id)

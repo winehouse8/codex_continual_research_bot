@@ -16,12 +16,19 @@ from codex_continual_research_bot.contracts import (
 from codex_continual_research_bot.orchestrator import (
     CompetitionValidationError,
     InvalidRunTransitionError,
+    InvalidTopicSnapshotError,
+    MalformedRunInputError,
     MissingTopicSnapshotError,
     RunOrchestrator,
     RunStateMachine,
+    STATE_TRANSITIONS,
     StaleTopicSnapshotError,
 )
-from codex_continual_research_bot.persistence import SQLitePersistenceLedger
+from codex_continual_research_bot.persistence import (
+    DuplicateRunStartError,
+    MalformedTopicSnapshotError,
+    SQLitePersistenceLedger,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -141,6 +148,26 @@ def proposal_data_with_current_best_challenge() -> dict[str, Any]:
     return proposal_data
 
 
+def insert_raw_topic_snapshot(
+    ledger: SQLitePersistenceLedger,
+    *,
+    snapshot_json: str,
+    version: int = 1,
+) -> None:
+    with ledger.connect() as connection, connection:
+        connection.execute(
+            """
+            INSERT INTO topic_snapshots(
+                topic_id,
+                snapshot_version,
+                snapshot_json,
+                created_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            ("topic_001", version, snapshot_json, "2026-04-19T00:00:00+00:00"),
+        )
+
+
 def test_happy_path_state_transition_builds_runtime_intent(tmp_path: Path) -> None:
     ledger = make_ledger(tmp_path)
     orchestrator = RunOrchestrator(ledger)
@@ -178,6 +205,52 @@ def test_invalid_transition_rejected(tmp_path: Path) -> None:
         )
 
 
+def test_documented_state_machine_matches_executable_transition_map() -> None:
+    assert STATE_TRANSITIONS == {
+        RunLifecycleState.QUEUED: frozenset({RunLifecycleState.LOADING_STATE}),
+        RunLifecycleState.LOADING_STATE: frozenset(
+            {RunLifecycleState.SELECTING_FRONTIER, RunLifecycleState.FAILED}
+        ),
+        RunLifecycleState.SELECTING_FRONTIER: frozenset(
+            {RunLifecycleState.PLANNING, RunLifecycleState.FAILED}
+        ),
+        RunLifecycleState.PLANNING: frozenset(
+            {RunLifecycleState.ATTACKING_CURRENT_BEST}
+        ),
+        RunLifecycleState.ATTACKING_CURRENT_BEST: frozenset(
+            {RunLifecycleState.GENERATING_CHALLENGERS}
+        ),
+        RunLifecycleState.GENERATING_CHALLENGERS: frozenset(
+            {RunLifecycleState.CODEX_EXECUTING}
+        ),
+        RunLifecycleState.CODEX_EXECUTING: frozenset(
+            {RunLifecycleState.NORMALIZING, RunLifecycleState.FAILED}
+        ),
+        RunLifecycleState.NORMALIZING: frozenset(
+            {RunLifecycleState.ADJUDICATING, RunLifecycleState.FAILED}
+        ),
+        RunLifecycleState.ADJUDICATING: frozenset(
+            {
+                RunLifecycleState.RETIRING_WEAK_HYPOTHESES,
+                RunLifecycleState.PERSISTING,
+                RunLifecycleState.FAILED,
+            }
+        ),
+        RunLifecycleState.RETIRING_WEAK_HYPOTHESES: frozenset(
+            {RunLifecycleState.PERSISTING, RunLifecycleState.FAILED}
+        ),
+        RunLifecycleState.PERSISTING: frozenset(
+            {RunLifecycleState.SUMMARIZING, RunLifecycleState.FAILED}
+        ),
+        RunLifecycleState.SUMMARIZING: frozenset({RunLifecycleState.COMPLETED}),
+        RunLifecycleState.FAILED: frozenset(
+            {RunLifecycleState.QUEUED, RunLifecycleState.DEAD_LETTER}
+        ),
+        RunLifecycleState.COMPLETED: frozenset(),
+        RunLifecycleState.DEAD_LETTER: frozenset(),
+    }
+
+
 def test_missing_topic_snapshot_fail_closed(tmp_path: Path) -> None:
     ledger = make_ledger(tmp_path, with_snapshot=False)
     orchestrator = RunOrchestrator(ledger)
@@ -192,6 +265,79 @@ def test_missing_topic_snapshot_fail_closed(tmp_path: Path) -> None:
     run = ledger.fetch_run("run_001")
     assert run is not None
     assert run["status"] == RunLifecycleState.FAILED.value
+
+
+def test_malformed_topic_snapshot_json_fail_closed(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path, with_snapshot=False)
+    insert_raw_topic_snapshot(ledger, snapshot_json="{")
+    orchestrator = RunOrchestrator(ledger)
+
+    with pytest.raises(MalformedTopicSnapshotError, match="malformed snapshot payload"):
+        orchestrator.start_queued_run(
+            queue_item_id="queue_001",
+            run_id="run_001",
+            worker_id="worker-a",
+        )
+
+    run = ledger.fetch_run("run_001")
+    assert run is not None
+    assert run["status"] == RunLifecycleState.FAILED.value
+
+
+def test_schema_invalid_topic_snapshot_fail_closed(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path, with_snapshot=False)
+    insert_raw_topic_snapshot(ledger, snapshot_json='{"topic_id": "topic_001"}')
+    orchestrator = RunOrchestrator(ledger)
+
+    with pytest.raises(MalformedTopicSnapshotError, match="malformed snapshot payload"):
+        orchestrator.start_queued_run(
+            queue_item_id="queue_001",
+            run_id="run_001",
+            worker_id="worker-a",
+        )
+
+    run = ledger.fetch_run("run_001")
+    assert run is not None
+    assert run["status"] == RunLifecycleState.FAILED.value
+
+
+def test_empty_current_best_snapshot_fail_closed_before_runtime(tmp_path: Path) -> None:
+    snapshot = make_topic_snapshot().model_copy(update={"current_best_hypotheses": []})
+    ledger = make_ledger(tmp_path, snapshot=snapshot)
+    orchestrator = RunOrchestrator(ledger)
+
+    with pytest.raises(InvalidTopicSnapshotError, match="no current-best hypothesis"):
+        orchestrator.start_queued_run(
+            queue_item_id="queue_001",
+            run_id="run_001",
+            worker_id="worker-a",
+        )
+
+    run = ledger.fetch_run("run_001")
+    assert run is not None
+    assert run["status"] == RunLifecycleState.FAILED.value
+
+
+def test_missing_queue_objective_fail_closed_after_snapshot_pin(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    with ledger.connect() as connection, connection:
+        connection.execute(
+            "UPDATE queue_items SET payload_json = ? WHERE id = ?",
+            ("{}", "queue_001"),
+        )
+    orchestrator = RunOrchestrator(ledger)
+
+    with pytest.raises(MalformedRunInputError, match="non-empty objective"):
+        orchestrator.start_queued_run(
+            queue_item_id="queue_001",
+            run_id="run_001",
+            worker_id="worker-a",
+        )
+
+    run = ledger.fetch_run("run_001")
+    assert run is not None
+    assert run["status"] == RunLifecycleState.FAILED.value
+    assert run["snapshot_version"] == 1
 
 
 def test_failed_run_cannot_resume_without_requeue(tmp_path: Path) -> None:
@@ -227,6 +373,59 @@ def test_duplicate_run_start_is_idempotent(tmp_path: Path) -> None:
 
     assert second.execution_request == first.execution_request
     assert second.lifecycle_state == RunLifecycleState.CODEX_EXECUTING
+
+
+def test_duplicate_run_start_with_different_run_id_is_rejected(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    orchestrator = RunOrchestrator(ledger)
+
+    orchestrator.start_queued_run(
+        queue_item_id="queue_001",
+        run_id="run_001",
+        worker_id="worker-a",
+    )
+
+    with pytest.raises(DuplicateRunStartError, match="already linked to run_001"):
+        orchestrator.start_queued_run(
+            queue_item_id="queue_001",
+            run_id="run_002",
+            worker_id="worker-b",
+        )
+
+    assert ledger.fetch_run("run_002") is None
+    idempotency_record = ledger.get_idempotency_record("run.execute:run_001:v1")
+    assert idempotency_record is not None
+    assert idempotency_record["run_id"] == "run_001"
+
+
+def test_duplicate_start_in_loading_state_cannot_resume_without_snapshot_pin(
+    tmp_path: Path,
+) -> None:
+    ledger = make_ledger(tmp_path)
+    claimed = ledger.claim_queue_item_for_run(
+        queue_item_id="queue_001",
+        worker_id="worker-a",
+        run_id="run_001",
+        mode=RunMode.SCHEDULED.value,
+    )
+    assert claimed is not None
+    RunStateMachine(ledger).transition(
+        run_id="run_001",
+        to_state=RunLifecycleState.LOADING_STATE,
+    )
+    ledger.store_topic_snapshot(make_topic_snapshot(version=2))
+
+    with pytest.raises(InvalidRunTransitionError, match="not ready for runtime resume"):
+        RunOrchestrator(ledger).start_queued_run(
+            queue_item_id="queue_001",
+            run_id="run_001",
+            worker_id="worker-b",
+        )
+
+    run = ledger.fetch_run("run_001")
+    assert run is not None
+    assert run["status"] == RunLifecycleState.LOADING_STATE.value
+    assert run["snapshot_version"] is None
 
 
 def test_run_resume_from_persisted_state(tmp_path: Path) -> None:
@@ -323,6 +522,31 @@ def test_current_best_attack_omitted_proposal_rejected(tmp_path: Path) -> None:
         )
 
 
+def test_invalid_competition_proposal_cannot_advance_to_normalizing(
+    tmp_path: Path,
+) -> None:
+    ledger = make_ledger(tmp_path)
+    orchestrator = RunOrchestrator(ledger)
+    intent = orchestrator.start_queued_run(
+        queue_item_id="queue_001",
+        run_id="run_001",
+        worker_id="worker-a",
+    )
+    proposal = ProposalBundle.model_validate(
+        json.loads((ROOT / "fixtures" / "proposal_bundle.json").read_text())
+    )
+
+    with pytest.raises(CompetitionValidationError, match="challenge argument"):
+        orchestrator.accept_competition_proposal(
+            intent=intent,
+            proposal=proposal,
+        )
+
+    run = ledger.fetch_run("run_001")
+    assert run is not None
+    assert run["status"] == RunLifecycleState.CODEX_EXECUTING.value
+
+
 def test_challenger_target_attack_does_not_satisfy_current_best_gate(
     tmp_path: Path,
 ) -> None:
@@ -354,6 +578,33 @@ def test_challenger_target_attack_does_not_satisfy_current_best_gate(
     proposal = ProposalBundle.model_validate(proposal_data)
 
     with pytest.raises(CompetitionValidationError, match="challenge argument"):
+        orchestrator.validate_proposal_for_competition(
+            intent=intent,
+            proposal=proposal,
+        )
+
+
+def test_partial_current_best_coverage_rejected(tmp_path: Path) -> None:
+    snapshot_data = make_topic_snapshot().model_dump(mode="json")
+    snapshot_data["current_best_hypotheses"].append(
+        {
+            "hypothesis_id": "hyp_002",
+            "title": "Second current best",
+            "summary": "This current-best hypothesis also needs direct pressure.",
+        }
+    )
+    ledger = make_ledger(tmp_path, snapshot=TopicSnapshot.model_validate(snapshot_data))
+    orchestrator = RunOrchestrator(ledger)
+    intent = orchestrator.start_queued_run(
+        queue_item_id="queue_001",
+        run_id="run_001",
+        worker_id="worker-a",
+    )
+    proposal_data = proposal_data_with_current_best_challenge()
+    proposal_data["revision_proposals"][0]["action"] = "weaken"
+    proposal = ProposalBundle.model_validate(proposal_data)
+
+    with pytest.raises(CompetitionValidationError, match="each current best"):
         orchestrator.validate_proposal_for_competition(
             intent=intent,
             proposal=proposal,
@@ -426,6 +677,26 @@ def test_reconciliation_or_retirement_pressure_omitted_proposal_rejected(
         )
 
 
+def test_unrelated_revision_pressure_rejected(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    orchestrator = RunOrchestrator(ledger)
+    intent = orchestrator.start_queued_run(
+        queue_item_id="queue_001",
+        run_id="run_001",
+        worker_id="worker-a",
+    )
+    proposal_data = proposal_data_with_current_best_challenge()
+    proposal_data["revision_proposals"][0]["action"] = "weaken"
+    proposal_data["revision_proposals"][0]["hypothesis_id"] = "hyp_999"
+    proposal = ProposalBundle.model_validate(proposal_data)
+
+    with pytest.raises(CompetitionValidationError, match="reconcile"):
+        orchestrator.validate_proposal_for_competition(
+            intent=intent,
+            proposal=proposal,
+        )
+
+
 def test_complete_competition_proposal_is_accepted(tmp_path: Path) -> None:
     ledger = make_ledger(tmp_path)
     orchestrator = RunOrchestrator(ledger)
@@ -442,3 +713,25 @@ def test_complete_competition_proposal_is_accepted(tmp_path: Path) -> None:
         intent=intent,
         proposal=proposal,
     )
+
+
+def test_valid_competition_proposal_advances_to_normalizing(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    orchestrator = RunOrchestrator(ledger)
+    intent = orchestrator.start_queued_run(
+        queue_item_id="queue_001",
+        run_id="run_001",
+        worker_id="worker-a",
+    )
+    proposal_data = proposal_data_with_current_best_challenge()
+    proposal_data["revision_proposals"][0]["action"] = "weaken"
+    proposal = ProposalBundle.model_validate(proposal_data)
+
+    orchestrator.accept_competition_proposal(
+        intent=intent,
+        proposal=proposal,
+    )
+
+    run = ledger.fetch_run("run_001")
+    assert run is not None
+    assert run["status"] == RunLifecycleState.NORMALIZING.value

@@ -437,6 +437,7 @@ stateDiagram-v2
     loading_state --> selecting_frontier
     loading_state --> failed: missing or stale topic snapshot
     selecting_frontier --> planning
+    selecting_frontier --> failed: malformed queue input
     planning --> attacking_current_best
     attacking_current_best --> generating_challengers
     generating_challengers --> codex_executing

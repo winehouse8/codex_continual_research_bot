@@ -9,6 +9,8 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
+from pydantic import ValidationError
+
 from codex_continual_research_bot.contracts import (
     QueueJob,
     QueueJobState,
@@ -41,6 +43,14 @@ class DuplicateRunEventError(RuntimeError):
 
 class DuplicateRunStartError(RuntimeError):
     """Raised when a queue item is already linked to a different run."""
+
+
+class StaleRunStateError(RuntimeError):
+    """Raised when a persisted run moved before a guarded state transition."""
+
+
+class MalformedTopicSnapshotError(RuntimeError):
+    """Raised when persisted topic snapshot JSON cannot be decoded as a contract."""
 
 
 @dataclass(frozen=True)
@@ -242,7 +252,12 @@ class SQLitePersistenceLedger:
 
         if row is None:
             return None
-        return TopicSnapshot.model_validate(json.loads(row["snapshot_json"]))
+        try:
+            return TopicSnapshot.model_validate(json.loads(row["snapshot_json"]))
+        except (json.JSONDecodeError, TypeError, ValidationError) as exc:
+            raise MalformedTopicSnapshotError(
+                f"topic {topic_id} has malformed snapshot payload"
+            ) from exc
 
     def reserve_idempotency_key(
         self,
@@ -477,6 +492,7 @@ class SQLitePersistenceLedger:
         run_id: str,
         state: RunLifecycleState,
         snapshot_version: int | None = None,
+        expected_state: RunLifecycleState | None = None,
     ) -> None:
         assignments = ["status = ?", "updated_at = ?"]
         params: list[Any] = [state.value, _normalize_timestamp()]
@@ -484,17 +500,31 @@ class SQLitePersistenceLedger:
             assignments.append("snapshot_version = ?")
             params.append(snapshot_version)
         params.append(run_id)
+        where_clause = "id = ?"
+        if expected_state is not None:
+            where_clause += " AND status = ?"
+            params.append(expected_state.value)
 
         with self.connect() as connection, connection:
             cursor = connection.execute(
                 f"""
                 UPDATE runs
                 SET {", ".join(assignments)}
-                WHERE id = ?
+                WHERE {where_clause}
                 """,
                 params,
             )
             if cursor.rowcount == 0:
+                current = connection.execute(
+                    "SELECT status FROM runs WHERE id = ?",
+                    (run_id,),
+                ).fetchone()
+                if current is None:
+                    raise KeyError(f"run {run_id} does not exist")
+                if expected_state is not None:
+                    raise StaleRunStateError(
+                        f"run {run_id} moved from {expected_state.value} to {current['status']}"
+                    )
                 raise KeyError(f"run {run_id} does not exist")
 
     def create_session_record(
