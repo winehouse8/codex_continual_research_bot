@@ -32,6 +32,16 @@ from codex_continual_research_bot.runtime import (
     WorkspaceRootMismatchError,
     SubprocessCodexExecLauncher,
 )
+from codex_continual_research_bot.tools import (
+    ToolManifest,
+    ToolIdempotencyMode,
+    ToolPermissions,
+    ToolRegistry,
+    ToolRetryBackoff,
+    ToolRetryPolicy,
+    ToolSideEffectLevel,
+    build_default_tool_registry,
+)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -553,7 +563,10 @@ def test_observed_tool_call_budget_exceeded_fails_closed(
     ledger, intent = make_intent(tmp_path)
     intent = with_budgets(intent, max_tool_calls=1)
     launcher = FakeLauncher(
-        stdout_lines=(raw_event("tool.started"), raw_event("tool.started")),
+        stdout_lines=(
+            raw_event("tool.started", tool_name="web.search"),
+            raw_event("tool.started", tool_name="web.fetch"),
+        ),
         final_payload=proposal_payload(),
     )
 
@@ -585,9 +598,13 @@ def test_streaming_budget_failure_stops_before_later_events_and_output(
     intent = with_budgets(intent, max_tool_calls=1)
     launcher = FakeLauncher(
         stdout_lines=(
-            raw_event("tool.started", tool_call_id="call_001"),
-            raw_event("tool.started", tool_call_id="call_002"),
-            raw_event("tool.started", tool_call_id="call_003"),
+            raw_event("tool.started", tool_call_id="call_001", tool_name="web.search"),
+            raw_event("tool.started", tool_call_id="call_002", tool_name="web.fetch"),
+            raw_event(
+                "tool.started",
+                tool_call_id="call_003",
+                tool_name="internal.graph_query",
+            ),
         ),
         final_payload=proposal_payload(),
     )
@@ -732,6 +749,86 @@ def test_unsupported_tool_policy_rejected_before_launch(
         ledger.list_run_events("run_001")[-1].payload.failure_code
         == FailureCode.EXECUTION_POLICY_REJECTED
     )
+
+
+def test_observed_unknown_tool_call_rejected_by_registry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    launcher = FakeLauncher(
+        stdout_lines=(raw_event("tool.started", tool_name="shell.exec"),),
+        final_payload=proposal_payload(),
+    )
+
+    with pytest.raises(ExecutionPolicyError) as excinfo:
+        CodexRuntimeCoordinator(
+            ledger,
+            make_config(tmp_path),
+            launcher=launcher,
+        ).execute(intent)
+
+    assert excinfo.value.failure_code == FailureCode.EXECUTION_POLICY_REJECTED
+    assert excinfo.value.retryable is False
+    assert event_types(ledger) == [
+        RuntimeEventType.RUN_STARTED,
+        RuntimeEventType.CODEX_EVENT,
+        RuntimeEventType.RUN_FAILED,
+    ]
+    assert "observed tool call rejected by registry policy" in ledger.list_run_events("run_001")[
+        -1
+    ].payload.detail
+
+
+def test_observed_forbidden_tool_class_rejected_by_registry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    registry = build_default_tool_registry()
+    registry.register(
+        ToolManifest(
+            name="external.email",
+            version="1",
+            kind="external_io",
+            description="Send an email.",
+            input_schema={
+                "type": "object",
+                "required": ["subject"],
+                "additionalProperties": False,
+                "properties": {"subject": {"type": "string", "minLength": 1}},
+            },
+            output_schema={
+                "type": "object",
+                "required": ["message_id"],
+                "additionalProperties": False,
+                "properties": {"message_id": {"type": "string", "minLength": 1}},
+            },
+            timeout_seconds=10,
+            side_effect_level=ToolSideEffectLevel.NON_IDEMPOTENT_WRITE,
+            idempotency_mode=ToolIdempotencyMode.NON_IDEMPOTENT,
+            retry_policy=ToolRetryPolicy(max_attempts=1, backoff=ToolRetryBackoff.NONE),
+            permissions=ToolPermissions(network=True),
+        )
+    )
+    intent = with_tool_policy(
+        intent,
+        allowed_tools=["web.search", "web.fetch", "internal.graph_query", "external.email"],
+    )
+    launcher = FakeLauncher(stdout_lines=(raw_event("turn.started"),))
+
+    with pytest.raises(ExecutionPolicyError) as excinfo:
+        CodexRuntimeCoordinator(
+            ledger,
+            make_config(tmp_path),
+            launcher=launcher,
+            tool_registry=registry,
+        ).execute(intent)
+
+    assert "non-idempotent write tools are forbidden" in excinfo.value.detail
+    assert launcher.invocations == []
 
 
 def test_replay_from_stored_artifact_matches_ledger(
