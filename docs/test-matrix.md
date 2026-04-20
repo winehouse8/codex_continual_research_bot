@@ -80,4 +80,5 @@ This matrix defines the minimum validation evidence for the topic snapshot read 
 | `test_unrelated_revision_pressure_rejected` | snapshot-relevant revision pressure | Unrelated hypothesis revision satisfies the retirement-pressure gate |
 | `test_complete_competition_proposal_is_accepted` | full proposal gate acceptance | Valid competition output is over-rejected by the Phase 3 gate |
 | `test_valid_competition_proposal_advances_to_normalizing` | accepted proposal lifecycle advancement | Valid runtime output cannot proceed after satisfying the Phase 3 gate |
+| `test_accepted_proposal_cannot_resume_runtime_execution` | runtime resume boundary after proposal acceptance | Accepted runtime output is re-executed after the run has already advanced to `normalizing` |
 | `test_stale_intent_cannot_advance_requeued_run_from_new_snapshot` | proposal acceptance replay guard | A stale runtime intent can advance a requeued run pinned to a newer snapshot |

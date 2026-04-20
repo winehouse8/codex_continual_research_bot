@@ -106,11 +106,6 @@ STATE_TRANSITIONS: Final[dict[RunLifecycleState, frozenset[RunLifecycleState]]] 
 RUNTIME_RESUMABLE_STATES: Final[frozenset[RunLifecycleState]] = frozenset(
     {
         RunLifecycleState.CODEX_EXECUTING,
-        RunLifecycleState.NORMALIZING,
-        RunLifecycleState.ADJUDICATING,
-        RunLifecycleState.RETIRING_WEAK_HYPOTHESES,
-        RunLifecycleState.PERSISTING,
-        RunLifecycleState.SUMMARIZING,
     }
 )
 

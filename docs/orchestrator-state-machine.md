@@ -52,7 +52,10 @@ must also contain at least one current-best hypothesis so the run has an
 attack target before runtime starts.
 Resume uses the `runs.snapshot_version` recorded when the run first reached
 frontier selection, so replay does not drift to a newer topic snapshot. Runs
-that have not pinned a snapshot yet are not runtime-resumable.
+that have not pinned a snapshot yet are not runtime-resumable. Runtime resume
+is limited to `codex_executing`; once a proposal advances the run to
+`normalizing`, the backend must continue the downstream validation/persistence
+path instead of rebuilding a fresh Codex execution request.
 
 ## Intent Builder
 

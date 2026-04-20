@@ -858,6 +858,32 @@ def test_valid_competition_proposal_advances_to_normalizing(tmp_path: Path) -> N
     assert run["status"] == RunLifecycleState.NORMALIZING.value
 
 
+def test_accepted_proposal_cannot_resume_runtime_execution(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    orchestrator = RunOrchestrator(ledger)
+    intent = orchestrator.start_queued_run(
+        queue_item_id="queue_001",
+        run_id="run_001",
+        worker_id="worker-a",
+    )
+    proposal_data = proposal_data_with_current_best_challenge()
+    proposal_data["revision_proposals"][0]["action"] = "weaken"
+    proposal = ProposalBundle.model_validate(proposal_data)
+    orchestrator.accept_competition_proposal(
+        intent=intent,
+        proposal=proposal,
+    )
+
+    with pytest.raises(InvalidRunTransitionError, match="normalizing"):
+        orchestrator.resume_run(run_id="run_001")
+    with pytest.raises(InvalidRunTransitionError, match="normalizing"):
+        orchestrator.start_queued_run(
+            queue_item_id="queue_001",
+            run_id="run_001",
+            worker_id="worker-b",
+        )
+
+
 def test_stale_intent_cannot_advance_requeued_run_from_new_snapshot(
     tmp_path: Path,
 ) -> None:
