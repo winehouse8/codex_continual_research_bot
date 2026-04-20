@@ -435,21 +435,6 @@ class CodexRuntimeCoordinator:
                 seq=seq,
             )
 
-        if raw_event_count == 0:
-            detail = "codex exec produced no JSONL events; refusing final-output-only result"
-            self._record_failure(
-                attempt_dir=attempt_dir,
-                run_id=intent.run_id,
-                seq=seq,
-                failure_code=FailureCode.CODEX_PROCESS_CRASH,
-                detail=detail,
-            )
-            raise CodexProcessCrashError(
-                failure_code=FailureCode.CODEX_PROCESS_CRASH,
-                detail=detail,
-                retryable=True,
-            )
-
         if result.timed_out:
             detail = (
                 "codex exec exceeded "
@@ -464,6 +449,21 @@ class CodexRuntimeCoordinator:
             )
             raise CodexTransportTimeoutError(
                 failure_code=FailureCode.CODEX_TRANSPORT_TIMEOUT,
+                detail=detail,
+                retryable=True,
+            )
+
+        if raw_event_count == 0:
+            detail = "codex exec produced no JSONL events; refusing final-output-only result"
+            self._record_failure(
+                attempt_dir=attempt_dir,
+                run_id=intent.run_id,
+                seq=seq,
+                failure_code=FailureCode.CODEX_PROCESS_CRASH,
+                detail=detail,
+            )
+            raise CodexProcessCrashError(
+                failure_code=FailureCode.CODEX_PROCESS_CRASH,
                 detail=detail,
                 retryable=True,
             )

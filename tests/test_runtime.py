@@ -322,6 +322,35 @@ def test_timeout_handling_records_retryable_transport_failure(
     assert failed_event.payload.failure_code == FailureCode.CODEX_TRANSPORT_TIMEOUT
 
 
+def test_timeout_without_events_records_transport_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    launcher = FakeLauncher(
+        stdout_lines=(),
+        timed_out=True,
+        exit_code=-1,
+    )
+
+    with pytest.raises(CodexTransportTimeoutError) as excinfo:
+        CodexRuntimeCoordinator(
+            ledger,
+            make_config(tmp_path),
+            launcher=launcher,
+        ).execute(intent)
+
+    assert excinfo.value.failure_code == FailureCode.CODEX_TRANSPORT_TIMEOUT
+    assert excinfo.value.retryable is True
+    assert event_types(ledger) == [
+        RuntimeEventType.RUN_STARTED,
+        RuntimeEventType.RUN_FAILED,
+    ]
+    failed_event = ledger.list_run_events("run_001")[-1]
+    assert failed_event.payload.failure_code == FailureCode.CODEX_TRANSPORT_TIMEOUT
+
+
 def test_process_crash_retry_classification(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
