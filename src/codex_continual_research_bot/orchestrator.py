@@ -242,10 +242,22 @@ class RunOrchestrator:
         if state in {RunLifecycleState.COMPLETED, RunLifecycleState.DEAD_LETTER}:
             raise InvalidRunTransitionError(f"run {run_id} is terminal")
 
-        snapshot_version = run.get("snapshot_version") or expected_snapshot_version
+        snapshot_version = run.get("snapshot_version")
+        if (
+            snapshot_version is not None
+            and expected_snapshot_version is not None
+            and snapshot_version != expected_snapshot_version
+        ):
+            raise StaleTopicSnapshotError(
+                "snapshot version mismatch: "
+                f"run uses {snapshot_version}, caller expected {expected_snapshot_version}"
+            )
         snapshot = self.load_topic_snapshot(
             topic_id=run["topic_id"],
-            expected_snapshot_version=snapshot_version,
+            snapshot_version=snapshot_version,
+            expected_snapshot_version=(
+                None if snapshot_version is not None else expected_snapshot_version
+            ),
         )
         frontier = self.build_frontier_selection_input(
             snapshot=snapshot,
@@ -264,8 +276,20 @@ class RunOrchestrator:
         self,
         *,
         topic_id: str,
+        snapshot_version: int | None = None,
         expected_snapshot_version: int | None = None,
     ) -> TopicSnapshot:
+        if snapshot_version is not None:
+            snapshot = self._ledger.fetch_topic_snapshot(
+                topic_id=topic_id,
+                snapshot_version=snapshot_version,
+            )
+            if snapshot is None:
+                raise MissingTopicSnapshotError(
+                    f"topic {topic_id} has no persisted snapshot version {snapshot_version}"
+                )
+            return snapshot
+
         latest = self._ledger.fetch_topic_snapshot(topic_id=topic_id)
         if latest is None:
             raise MissingTopicSnapshotError(f"topic {topic_id} has no persisted snapshot")
@@ -376,6 +400,19 @@ class RunOrchestrator:
         if intent.frontier.requires_current_best_attack and not has_current_best_attack:
             raise CompetitionValidationError(
                 "proposal must include a challenge argument against the current best hypothesis"
+            )
+
+        has_support_argument = any(
+            argument.stance == ArgumentStance.SUPPORT
+            and argument.target_hypothesis_id in attack_target_ids
+            for argument in proposal.arguments
+        )
+        if (
+            intent.execution_request.plan.must_collect_support_and_challenge
+            and not has_support_argument
+        ):
+            raise CompetitionValidationError(
+                "proposal must include support and challenge arguments for the selected hypothesis targets"
             )
 
         if (

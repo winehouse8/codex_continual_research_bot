@@ -210,13 +210,30 @@ def test_run_resume_from_persisted_state(tmp_path: Path) -> None:
         run_id="run_001",
         worker_id="worker-a",
     )
+    ledger.store_topic_snapshot(make_topic_snapshot(version=2))
 
     reopened = SQLitePersistenceLedger(db_path)
     reopened.initialize()
     resumed = RunOrchestrator(reopened).resume_run(run_id="run_001")
 
     assert resumed.lifecycle_state == RunLifecycleState.CODEX_EXECUTING
+    assert resumed.snapshot_version == 1
     assert resumed.execution_request == original.execution_request
+
+
+def test_run_resume_rejects_mismatched_expected_snapshot(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    RunOrchestrator(ledger).start_queued_run(
+        queue_item_id="queue_001",
+        run_id="run_001",
+        worker_id="worker-a",
+    )
+
+    with pytest.raises(StaleTopicSnapshotError, match="run uses 1"):
+        RunOrchestrator(ledger).resume_run(
+            run_id="run_001",
+            expected_snapshot_version=2,
+        )
 
 
 def test_queue_item_to_run_intent_mapping(tmp_path: Path) -> None:
@@ -264,6 +281,33 @@ def test_current_best_attack_omitted_proposal_rejected(tmp_path: Path) -> None:
     )
 
     with pytest.raises(CompetitionValidationError, match="challenge argument"):
+        orchestrator.validate_proposal_for_competition(
+            intent=intent,
+            proposal=proposal,
+        )
+
+
+def test_support_argument_omitted_proposal_rejected(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    orchestrator = RunOrchestrator(ledger)
+    intent = orchestrator.start_queued_run(
+        queue_item_id="queue_001",
+        run_id="run_001",
+        worker_id="worker-a",
+    )
+    proposal_data = json.loads((ROOT / "fixtures" / "proposal_bundle.json").read_text())
+    proposal_data["arguments"] = [
+        {
+            "argument_id": "arg_002",
+            "stance": "challenge",
+            "target_hypothesis_id": "hyp_001",
+            "claim_ids": ["claim_001"],
+            "rationale": "The run must pressure-test the current best hypothesis.",
+        }
+    ]
+    proposal = ProposalBundle.model_validate(proposal_data)
+
+    with pytest.raises(CompetitionValidationError, match="support and challenge"):
         orchestrator.validate_proposal_for_competition(
             intent=intent,
             proposal=proposal,

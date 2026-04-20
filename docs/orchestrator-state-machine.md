@@ -44,6 +44,8 @@ stateDiagram-v2
 `(topic_id, snapshot_version)`. The orchestrator reads only the latest snapshot.
 If a caller supplies `expected_snapshot_version` and the latest version differs,
 the run transitions to `failed` and no runtime request is returned.
+Resume uses the `runs.snapshot_version` recorded when the run first reached
+frontier selection, so replay does not drift to a newer topic snapshot.
 
 ## Intent Builder
 
@@ -65,6 +67,7 @@ All generated requests set the Phase 3 competition requirements:
 Before later phases may normalize or persist runtime output,
 `validate_proposal_for_competition(...)` requires:
 
+- support and challenge arguments for the selected hypothesis targets
 - a challenge argument targeting the current-best/challenger target
 - at least one challenger hypothesis
 - either conflict reconciliation/escalation or weaken/retire/supersede pressure
