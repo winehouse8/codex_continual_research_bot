@@ -19,6 +19,10 @@ MIGRATIONS = [
         version="0002_phase3_topic_snapshot_orchestrator",
         filename="migrations/0002_phase3_topic_snapshot_orchestrator.sql",
     ),
+    Migration(
+        version="0003_phase8_session_auth_boundaries",
+        filename="migrations/0003_phase8_session_auth_boundaries.sql",
+    ),
 ]
 
 

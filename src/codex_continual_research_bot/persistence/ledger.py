@@ -16,6 +16,8 @@ from codex_continual_research_bot.contracts import (
     QueueJobState,
     RunLifecycleState,
     RuntimeEvent,
+    SessionInspectResult,
+    SessionState,
     TopicSnapshot,
 )
 
@@ -57,6 +59,10 @@ class MalformedTopicSnapshotError(RuntimeError):
     """Raised when persisted topic snapshot JSON cannot be decoded as a contract."""
 
 
+class DuplicateSessionLeaseError(RuntimeError):
+    """Raised when a non-expired session lease is already active."""
+
+
 @dataclass(frozen=True)
 class ClaimedQueueItem:
     queue_item_id: str
@@ -66,6 +72,19 @@ class ClaimedQueueItem:
     idempotency_key: str
     attempts: int
     worker_id: str
+
+
+@dataclass(frozen=True)
+class SessionLeaseRecord:
+    lease_id: str
+    session_id: str
+    principal_id: str
+    purpose: str
+    holder: str
+    host_id: str
+    run_id: str | None
+    leased_at: str
+    expires_at: str
 
 
 class SQLitePersistenceLedger:
@@ -635,6 +654,134 @@ class SQLitePersistenceLedger:
                 ),
             )
 
+    def record_session_inspection(
+        self,
+        inspection: SessionInspectResult,
+        *,
+        provider: str = "openai-codex-chatgpt",
+        codex_home: str = "",
+        created_at: datetime | None = None,
+    ) -> None:
+        with self.connect() as connection, connection:
+            connection.execute(
+                """
+                INSERT INTO session_ledger(
+                    session_id,
+                    principal_id,
+                    provider,
+                    host_id,
+                    workspace_id,
+                    workspace_root,
+                    state,
+                    credential_locator,
+                    account_fingerprint,
+                    plan_type,
+                    verification_level,
+                    last_validated_at,
+                    last_refreshed_at,
+                    codex_home,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    principal_id = excluded.principal_id,
+                    provider = excluded.provider,
+                    host_id = excluded.host_id,
+                    workspace_id = excluded.workspace_id,
+                    workspace_root = excluded.workspace_root,
+                    state = excluded.state,
+                    credential_locator = excluded.credential_locator,
+                    account_fingerprint = excluded.account_fingerprint,
+                    plan_type = excluded.plan_type,
+                    verification_level = excluded.verification_level,
+                    last_validated_at = excluded.last_validated_at,
+                    last_refreshed_at = excluded.last_refreshed_at,
+                    codex_home = excluded.codex_home,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    inspection.session_id,
+                    inspection.principal_id,
+                    provider,
+                    inspection.host_id,
+                    inspection.workspace_id,
+                    inspection.workspace_root,
+                    inspection.state.value,
+                    inspection.credential_locator,
+                    inspection.principal_fingerprint,
+                    inspection.account.plan_type,
+                    inspection.verification_level.value,
+                    _normalize_timestamp(inspection.last_validated_at),
+                    _normalize_timestamp(inspection.last_refreshed_at),
+                    codex_home,
+                    _normalize_timestamp(created_at),
+                    _normalize_timestamp(created_at),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO session_host_bindings(
+                    session_id,
+                    host_id,
+                    workspace_root,
+                    codex_home,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(session_id, host_id) DO UPDATE SET
+                    workspace_root = excluded.workspace_root,
+                    codex_home = excluded.codex_home
+                """,
+                (
+                    inspection.session_id,
+                    inspection.host_id,
+                    inspection.workspace_root,
+                    codex_home,
+                    _normalize_timestamp(created_at),
+                ),
+            )
+
+    def fetch_session_record(self, session_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM session_ledger
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def transition_session_state(
+        self,
+        *,
+        session_id: str,
+        state: SessionState,
+        failure_code: str | None = None,
+        now: datetime | None = None,
+    ) -> None:
+        failure_at = None if failure_code is None else _normalize_timestamp(now)
+        with self.connect() as connection, connection:
+            cursor = connection.execute(
+                """
+                UPDATE session_ledger
+                SET state = ?,
+                    last_failure_code = ?,
+                    last_failure_at = ?,
+                    updated_at = ?
+                WHERE session_id = ?
+                """,
+                (
+                    state.value,
+                    failure_code,
+                    failure_at,
+                    _normalize_timestamp(now),
+                    session_id,
+                ),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(f"session {session_id} does not exist")
+
     def append_session_event(
         self,
         *,
@@ -663,34 +810,125 @@ class SQLitePersistenceLedger:
         session_id: str,
         holder: str,
         ttl_seconds: int,
+        lease_id: str | None = None,
+        principal_id: str | None = None,
+        purpose: str | None = None,
+        run_id: str | None = None,
+        host_id: str | None = None,
         now: datetime | None = None,
-    ) -> None:
+    ) -> SessionLeaseRecord:
         current = now or _utcnow()
         expires_at = current + timedelta(seconds=ttl_seconds)
-        with self.connect() as connection, connection:
-            connection.execute(
-                """
-                INSERT INTO session_leases(session_id, holder, leased_at, expires_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(session_id) DO UPDATE SET
-                    holder = excluded.holder,
-                    leased_at = excluded.leased_at,
-                    expires_at = excluded.expires_at
-                """,
-                (
-                    session_id,
-                    holder,
-                    _normalize_timestamp(current),
-                    _normalize_timestamp(expires_at),
-                ),
-            )
+        lease_id = lease_id or f"{session_id}:{holder}:{int(current.timestamp())}"
+        current_value = _normalize_timestamp(current)
+        expires_value = _normalize_timestamp(expires_at)
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    "DELETE FROM session_leases WHERE session_id = ? AND expires_at < ?",
+                    (session_id, current_value),
+                )
+                try:
+                    connection.execute(
+                        """
+                        INSERT INTO session_leases(
+                            session_id,
+                            holder,
+                            leased_at,
+                            expires_at,
+                            lease_id,
+                            principal_id,
+                            purpose,
+                            run_id,
+                            host_id,
+                            heartbeat_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            session_id,
+                            holder,
+                            current_value,
+                            expires_value,
+                            lease_id,
+                            principal_id,
+                            purpose,
+                            run_id,
+                            host_id,
+                            current_value,
+                        ),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise DuplicateSessionLeaseError(session_id) from exc
+                connection.execute(
+                    """
+                    UPDATE session_ledger
+                    SET lease_count = lease_count + 1,
+                        updated_at = ?
+                    WHERE session_id = ?
+                    """,
+                    (current_value, session_id),
+                )
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+        return SessionLeaseRecord(
+            lease_id=lease_id,
+            session_id=session_id,
+            principal_id=principal_id or "",
+            purpose=purpose or "",
+            holder=holder,
+            host_id=host_id or "",
+            run_id=run_id,
+            leased_at=current_value,
+            expires_at=expires_value,
+        )
 
-    def release_stale_session_leases(self, *, now: datetime | None = None) -> int:
+    def release_session_lease(self, *, session_id: str, lease_id: str | None = None) -> bool:
+        where = "session_id = ?"
+        params: list[Any] = [session_id]
+        if lease_id is not None:
+            where += " AND lease_id = ?"
+            params.append(lease_id)
         with self.connect() as connection, connection:
             cursor = connection.execute(
-                "DELETE FROM session_leases WHERE expires_at < ?",
-                (_normalize_timestamp(now),),
+                f"DELETE FROM session_leases WHERE {where}",
+                params,
             )
+            if cursor.rowcount:
+                connection.execute(
+                    """
+                    UPDATE session_ledger
+                    SET lease_count = CASE WHEN lease_count > 0 THEN lease_count - 1 ELSE 0 END,
+                        updated_at = ?
+                    WHERE session_id = ?
+                    """,
+                    (_normalize_timestamp(), session_id),
+                )
+            return cursor.rowcount > 0
+
+    def release_stale_session_leases(self, *, now: datetime | None = None) -> int:
+        cutoff = _normalize_timestamp(now)
+        with self.connect() as connection, connection:
+            stale_rows = connection.execute(
+                "SELECT session_id FROM session_leases WHERE expires_at < ?",
+                (cutoff,),
+            ).fetchall()
+            cursor = connection.execute(
+                "DELETE FROM session_leases WHERE expires_at < ?",
+                (cutoff,),
+            )
+            for row in stale_rows:
+                connection.execute(
+                    """
+                    UPDATE session_ledger
+                    SET lease_count = CASE WHEN lease_count > 0 THEN lease_count - 1 ELSE 0 END,
+                        updated_at = ?
+                    WHERE session_id = ?
+                    """,
+                    (cutoff, row["session_id"]),
+                )
             return cursor.rowcount
 
     def record_queue_retry(
