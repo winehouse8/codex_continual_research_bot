@@ -192,6 +192,39 @@ def test_retryable_failure_requeues_with_backoff(tmp_path: Path) -> None:
     assert queue_row["available_at"] > now.isoformat()
 
 
+def test_retryable_failure_can_claim_existing_run_on_next_attempt(
+    tmp_path: Path,
+) -> None:
+    ledger = make_ledger(tmp_path)
+    worker = QueueWorker(ledger, worker_id="worker-a")
+
+    def fail_retryable(_: RunIntent) -> None:
+        raise RetryableQueueWorkerError(
+            failure_code=FailureCode.RUNNER_HOST_UNAVAILABLE,
+            detail="runner host did not accept the lease",
+        )
+
+    first = worker.execute_item(
+        queue_item_id="queue_001",
+        run_id="run_queue_001",
+        handler=fail_retryable,
+        now=datetime(2026, 4, 19, tzinfo=timezone.utc),
+    )
+    second = worker.execute_item(
+        queue_item_id="queue_001",
+        run_id="run_queue_001",
+        handler=lambda _: None,
+    )
+
+    queue_row = ledger.fetch_queue_item("queue_001")
+    assert queue_row is not None
+    assert first.state == QueueJobState.QUEUED
+    assert second.state == QueueJobState.COMPLETED
+    assert second.action == "completed"
+    assert queue_row["state"] == QueueJobState.COMPLETED.value
+    assert queue_row["attempts"] == 1
+
+
 def test_terminal_failure_routes_to_dead_letter_queue(tmp_path: Path) -> None:
     ledger = make_ledger(tmp_path)
 

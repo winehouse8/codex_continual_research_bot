@@ -329,7 +329,7 @@ class SQLitePersistenceLedger:
             try:
                 row = connection.execute(
                     """
-                    SELECT id, topic_id, dedupe_key, idempotency_key, attempts
+                    SELECT id, topic_id, dedupe_key, idempotency_key, attempts, state
                     FROM queue_items
                     WHERE id = ? AND available_at <= ?
                     LIMIT 1
@@ -353,6 +353,25 @@ class SQLitePersistenceLedger:
                         raise DuplicateRunStartError(
                             f"{row['id']} is already linked to {existing_run['id']}"
                         )
+                    if row["state"] == QueueJobState.QUEUED.value:
+                        cursor = connection.execute(
+                            """
+                            UPDATE queue_items
+                            SET state = ?, claimed_by = ?, claimed_at = ?, updated_at = ?
+                            WHERE id = ? AND state = ?
+                            """,
+                            (
+                                QueueJobState.CLAIMED.value,
+                                worker_id,
+                                now_value,
+                                now_value,
+                                row["id"],
+                                QueueJobState.QUEUED.value,
+                            ),
+                        )
+                        if cursor.rowcount == 0:
+                            connection.execute("ROLLBACK")
+                            return None
                     connection.execute("COMMIT")
                     return ClaimedQueueItem(
                         queue_item_id=row["id"],
