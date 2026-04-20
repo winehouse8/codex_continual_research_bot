@@ -6,6 +6,7 @@ from .ledger import (
     DuplicateRunStartError,
     DuplicateRunEventError,
     MalformedTopicSnapshotError,
+    QueueMutationMismatchError,
     SQLitePersistenceLedger,
     StaleRunStateError,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "DuplicateRunStartError",
     "DuplicateRunEventError",
     "MalformedTopicSnapshotError",
+    "QueueMutationMismatchError",
     "SQLitePersistenceLedger",
     "StaleRunStateError",
     "apply_migrations",
