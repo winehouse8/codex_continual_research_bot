@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from codex_continual_research_bot.contracts import SessionInspectResult, SessionState
+from codex_continual_research_bot.contracts import (
+    FailureCode,
+    SessionInspectResult,
+    SessionState,
+)
 from codex_continual_research_bot.session_manager import SessionManager, SessionPolicyError
 
 
@@ -17,6 +21,7 @@ class SessionHealthcheckResult:
     session_id: str
     state: SessionState
     leaseable: bool
+    failure_code: FailureCode | None = None
     failure_detail: str | None = None
 
 
@@ -35,6 +40,7 @@ class SessionHealthcheckJob:
                 session_id=inspection.session_id,
                 state=SessionState.REAUTH_REQUIRED,
                 leaseable=False,
+                failure_code=exc.failure_code,
                 failure_detail=exc.detail,
             )
         return SessionHealthcheckResult(
