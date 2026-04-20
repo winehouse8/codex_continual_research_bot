@@ -30,6 +30,19 @@ from .orchestrator import (
     StaleTopicSnapshotError,
     STATE_TRANSITIONS,
 )
+from .persistence import QueueMutationMismatchError
+from .queue_worker import (
+    QueueWorker,
+    RetryableQueueWorkerError,
+    TerminalQueueWorkerError,
+    WorkerExecutionResult,
+)
+from .scheduler import (
+    SchedulerPolicyEvaluator,
+    SchedulerSelection,
+    TopicScheduleCandidate,
+    competition_pressure_score,
+)
 
 __all__ = [
     "CanonicalGraphService",
@@ -43,7 +56,10 @@ __all__ = [
     "MalformedRunInputError",
     "MissingTopicSnapshotError",
     "ProposalBundle",
+    "QueueWorker",
     "QueueJob",
+    "QueueMutationMismatchError",
+    "RetryableQueueWorkerError",
     "RunExecutionRequest",
     "RunIntent",
     "RunLifecycleState",
@@ -51,9 +67,15 @@ __all__ = [
     "RunStateMachine",
     "RuntimeEvent",
     "STATE_TRANSITIONS",
+    "SchedulerPolicyEvaluator",
+    "SchedulerSelection",
     "SessionInspectResult",
     "StaleTopicSnapshotError",
+    "TerminalQueueWorkerError",
     "TopicSnapshot",
+    "TopicScheduleCandidate",
+    "WorkerExecutionResult",
     "canonical_mapping_spec",
+    "competition_pressure_score",
     "neo4j_constraints",
 ]

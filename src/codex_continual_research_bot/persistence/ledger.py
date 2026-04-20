@@ -49,6 +49,10 @@ class StaleRunStateError(RuntimeError):
     """Raised when a persisted run moved before a guarded state transition."""
 
 
+class QueueMutationMismatchError(RuntimeError):
+    """Raised when ack/nack/dead-letter does not match the claimed queue item."""
+
+
 class MalformedTopicSnapshotError(RuntimeError):
     """Raised when persisted topic snapshot JSON cannot be decoded as a contract."""
 
@@ -467,6 +471,24 @@ class SQLitePersistenceLedger:
         except DuplicateRunStartError:
             return None
 
+    def fetch_next_claimable_queue_item(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM queue_items
+                WHERE state = ? AND available_at <= ?
+                ORDER BY priority DESC, available_at ASC, created_at ASC
+                LIMIT 1
+                """,
+                (QueueJobState.QUEUED.value, _normalize_timestamp(now)),
+            ).fetchone()
+        return None if row is None else dict(row)
+
     def append_run_event(self, event: RuntimeEvent) -> None:
         payload_json = json.dumps(event.payload.model_dump(mode="json"), sort_keys=True)
         try:
@@ -634,32 +656,217 @@ class SQLitePersistenceLedger:
         failure_code: str,
         detail: str,
         next_available_at: datetime,
+        run_id: str | None = None,
+        worker_id: str | None = None,
     ) -> None:
         next_time = _normalize_timestamp(next_available_at)
-        with self.connect() as connection, connection:
-            connection.execute(
-                """
-                UPDATE queue_items
-                SET state = ?,
-                    attempts = attempts + 1,
-                    available_at = ?,
-                    claimed_by = NULL,
-                    claimed_at = NULL,
-                    last_failure_code = ?,
-                    last_failure_detail = ?,
-                    last_failure_retryable = 1,
-                    last_failure_human_review = 0,
-                    updated_at = ?
-                WHERE id = ?
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                if run_id is not None or worker_id is not None:
+                    self._validate_claim_for_mutation(
+                        connection=connection,
+                        queue_item_id=queue_item_id,
+                        run_id=run_id,
+                        worker_id=worker_id,
+                    )
+                cursor = connection.execute(
+                    """
+                    UPDATE queue_items
+                    SET state = ?,
+                        attempts = attempts + 1,
+                        available_at = ?,
+                        claimed_by = NULL,
+                        claimed_at = NULL,
+                        last_failure_code = ?,
+                        last_failure_detail = ?,
+                        last_failure_retryable = 1,
+                        last_failure_human_review = 0,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        QueueJobState.QUEUED.value,
+                        next_time,
+                        failure_code,
+                        detail,
+                        _normalize_timestamp(),
+                        queue_item_id,
+                    ),
+                )
+                if cursor.rowcount == 0:
+                    raise QueueMutationMismatchError(
+                        f"queue item {queue_item_id} is not writable for retry"
+                    )
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+
+    def complete_queue_item(
+        self,
+        *,
+        queue_item_id: str,
+        run_id: str,
+        worker_id: str,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._validate_claim_for_mutation(
+                    connection=connection,
+                    queue_item_id=queue_item_id,
+                    run_id=run_id,
+                    worker_id=worker_id,
+                )
+                connection.execute(
+                    """
+                    UPDATE queue_items
+                    SET state = ?,
+                        claimed_by = NULL,
+                        claimed_at = NULL,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        QueueJobState.COMPLETED.value,
+                        _normalize_timestamp(),
+                        queue_item_id,
+                    ),
+                )
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+
+    def record_queue_dead_letter(
+        self,
+        *,
+        queue_item_id: str,
+        failure_code: str,
+        detail: str,
+        retryable: bool,
+        human_review_required: bool,
+        run_id: str | None = None,
+        worker_id: str | None = None,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                if run_id is not None or worker_id is not None:
+                    self._validate_claim_for_mutation(
+                        connection=connection,
+                        queue_item_id=queue_item_id,
+                        run_id=run_id,
+                        worker_id=worker_id,
+                    )
+                cursor = connection.execute(
+                    """
+                    UPDATE queue_items
+                    SET state = ?,
+                        attempts = attempts + 1,
+                        claimed_by = NULL,
+                        claimed_at = NULL,
+                        last_failure_code = ?,
+                        last_failure_detail = ?,
+                        last_failure_retryable = ?,
+                        last_failure_human_review = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        QueueJobState.DEAD_LETTER.value,
+                        failure_code,
+                        detail,
+                        int(retryable),
+                        int(human_review_required),
+                        _normalize_timestamp(),
+                        queue_item_id,
+                    ),
+                )
+                if cursor.rowcount == 0:
+                    raise QueueMutationMismatchError(
+                        f"queue item {queue_item_id} is not writable for dead-letter"
+                    )
+                if run_id is not None:
+                    connection.execute(
+                        """
+                        UPDATE runs
+                        SET status = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            RunLifecycleState.DEAD_LETTER.value,
+                            _normalize_timestamp(),
+                            run_id,
+                        ),
+                    )
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+
+    def list_dead_letter_queue(
+        self,
+        *,
+        topic_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: list[Any] = [QueueJobState.DEAD_LETTER.value]
+        where_clause = "state = ?"
+        if topic_id is not None:
+            where_clause += " AND topic_id = ?"
+            params.append(topic_id)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM queue_items
+                WHERE {where_clause}
+                ORDER BY updated_at DESC, created_at ASC
                 """,
-                (
-                    QueueJobState.QUEUED.value,
-                    next_time,
-                    failure_code,
-                    detail,
-                    _normalize_timestamp(),
-                    queue_item_id,
-                ),
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _validate_claim_for_mutation(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        queue_item_id: str,
+        run_id: str | None,
+        worker_id: str | None,
+    ) -> None:
+        row = connection.execute(
+            """
+            SELECT
+                queue_items.id AS queue_item_id,
+                queue_items.state AS queue_state,
+                queue_items.claimed_by AS claimed_by,
+                runs.id AS run_id,
+                runs.queue_item_id AS run_queue_item_id
+            FROM queue_items
+            LEFT JOIN runs ON runs.queue_item_id = queue_items.id
+            WHERE queue_items.id = ?
+            """,
+            (queue_item_id,),
+        ).fetchone()
+        if row is None:
+            raise QueueMutationMismatchError(f"queue item {queue_item_id} does not exist")
+        if row["queue_state"] != QueueJobState.CLAIMED.value:
+            raise QueueMutationMismatchError(
+                f"queue item {queue_item_id} is {row['queue_state']}, not claimed"
+            )
+        if worker_id is not None and row["claimed_by"] != worker_id:
+            raise QueueMutationMismatchError(
+                f"queue item {queue_item_id} is claimed by {row['claimed_by']}, not {worker_id}"
+            )
+        if run_id is not None and row["run_id"] != run_id:
+            raise QueueMutationMismatchError(
+                f"queue item {queue_item_id} is linked to run {row['run_id']}, not {run_id}"
+            )
+        if row["run_queue_item_id"] != queue_item_id:
+            raise QueueMutationMismatchError(
+                f"run {row['run_id']} does not point back to queue item {queue_item_id}"
             )
 
     def fetch_queue_item(self, queue_item_id: str) -> dict[str, Any] | None:
