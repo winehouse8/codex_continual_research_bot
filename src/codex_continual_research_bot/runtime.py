@@ -19,7 +19,6 @@ from codex_continual_research_bot.contracts import (
     CodexRawEventPayload,
     ExecutionBudgets,
     FailureCode,
-    NetworkMode,
     OutputValidatedPayload,
     ProposalBundle,
     RunCompletedPayload,
@@ -30,12 +29,16 @@ from codex_continual_research_bot.contracts import (
     RunStartedPayload,
     RuntimeEvent,
     RuntimeEventType,
-    SandboxMode,
 )
 from codex_continual_research_bot.persistence import SQLitePersistenceLedger
+from codex_continual_research_bot.tools import (
+    ToolPolicyViolation,
+    ToolRegistry,
+    ToolPolicyValidator,
+    build_default_tool_registry,
+)
 
 
-SUPPORTED_ALLOWED_TOOLS = frozenset({"web.search", "web.fetch", "internal.graph_query"})
 TURN_START_EVENTS = frozenset({"turn.started", "turn_started"})
 TOOL_CALL_START_EVENTS = frozenset(
     {
@@ -421,6 +424,7 @@ class CodexRuntimeCoordinator:
         *,
         launcher: CodexExecLauncher | None = None,
         prompt_builder: RuntimePromptBuilder | None = None,
+        tool_registry: ToolRegistry | None = None,
     ) -> None:
         self._ledger = ledger
         self._config = config
@@ -428,6 +432,11 @@ class CodexRuntimeCoordinator:
         self._prompt_builder = prompt_builder or RuntimePromptBuilder()
         self._artifact_store = RuntimeArtifactStore(config.artifact_root)
         self._normalizer = CodexJSONLEventNormalizer(self._artifact_store)
+        self._tool_registry = tool_registry or build_default_tool_registry()
+        self._tool_policy_validator = ToolPolicyValidator(
+            self._tool_registry,
+            workspace_root=config.workspace_root,
+        )
 
     def execute(self, intent: RunIntent) -> RuntimeExecutionResult:
         attempt_dir = self._artifact_store.attempt_dir(
@@ -497,6 +506,13 @@ class CodexRuntimeCoordinator:
             if _is_turn_start_event(raw_event_type):
                 observed_turn_count += 1
             if _is_tool_call_start_event(raw_event_type):
+                self._enforce_observed_tool_policy(
+                    request=intent.execution_request,
+                    raw_line=line,
+                    attempt_dir=attempt_dir,
+                    run_id=intent.run_id,
+                    seq=seq,
+                )
                 observed_tool_call_count += 1
             self._enforce_observed_runtime_budgets(
                 budgets=intent.execution_request.budgets,
@@ -703,8 +719,10 @@ class CodexRuntimeCoordinator:
             payload={
                 "command": list(command[:-1]) + ["<runtime prompt>"],
                 "cwd": str(workspace_root),
+                "registered_tools": sorted(self._tool_registry.names()),
                 "tool_policy": request.tool_policy.model_dump(mode="json"),
                 "timeout_seconds": request.budgets.max_runtime_seconds,
+                "writable_roots": [str(workspace_root)],
             },
         )
         return CodexExecInvocation(
@@ -716,30 +734,58 @@ class CodexRuntimeCoordinator:
         )
 
     def _enforce_tool_policy(self, request: RunExecutionRequest) -> None:
-        policy = request.tool_policy
-        if policy.sandbox_mode == SandboxMode.DISABLED:
+        try:
+            self._tool_policy_validator.validate_runtime_policy(request.tool_policy)
+        except ToolPolicyViolation as exc:
             raise ExecutionPolicyError(
                 failure_code=FailureCode.EXECUTION_POLICY_REJECTED,
-                detail="runtime policy rejected disabled sandbox mode",
+                detail=str(exc),
                 retryable=False,
+            ) from exc
+
+    def _enforce_observed_tool_policy(
+        self,
+        *,
+        request: RunExecutionRequest,
+        raw_line: str,
+        attempt_dir: Path,
+        run_id: str,
+        seq: int,
+    ) -> None:
+        tool_name = _extract_tool_name_from_raw_event(raw_line)
+        if tool_name is None:
+            detail = "observed tool event did not include a tool name"
+            self._record_failure(
+                attempt_dir=attempt_dir,
+                run_id=run_id,
+                seq=seq,
+                failure_code=FailureCode.EXECUTION_POLICY_REJECTED,
+                detail=detail,
             )
-        if policy.network_mode != NetworkMode.RESTRICTED:
             raise ExecutionPolicyError(
                 failure_code=FailureCode.EXECUTION_POLICY_REJECTED,
-                detail=(
-                    "unsupported network mode for codex exec runtime: "
-                    f"{policy.network_mode.value}"
-                ),
+                detail=detail,
                 retryable=False,
             )
-        allowed_tools = frozenset(policy.allowed_tools)
-        if allowed_tools != SUPPORTED_ALLOWED_TOOLS:
-            unsupported = ", ".join(sorted(allowed_tools ^ SUPPORTED_ALLOWED_TOOLS))
+        try:
+            self._tool_policy_validator.validate_observed_tool_call(
+                policy=request.tool_policy,
+                tool_name=tool_name,
+            )
+        except ToolPolicyViolation as exc:
+            detail = f"observed tool call rejected by registry policy: {exc}"
+            self._record_failure(
+                attempt_dir=attempt_dir,
+                run_id=run_id,
+                seq=seq,
+                failure_code=FailureCode.EXECUTION_POLICY_REJECTED,
+                detail=detail,
+            )
             raise ExecutionPolicyError(
                 failure_code=FailureCode.EXECUTION_POLICY_REJECTED,
-                detail=f"unsupported runtime tool policy drift: {unsupported}",
+                detail=detail,
                 retryable=False,
-            )
+            ) from exc
 
     def _enforce_budgets(
         self,
@@ -919,3 +965,28 @@ def _is_turn_start_event(raw_event_type: str) -> bool:
 
 def _is_tool_call_start_event(raw_event_type: str) -> bool:
     return raw_event_type.lower() in TOOL_CALL_START_EVENTS
+
+
+def _extract_tool_name_from_raw_event(raw_line: str) -> str | None:
+    raw_event = json.loads(raw_line)
+    candidates = (
+        raw_event.get("tool_name"),
+        raw_event.get("name"),
+        raw_event.get("tool"),
+    )
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate:
+            return candidate
+
+    tool_call = raw_event.get("tool_call")
+    if isinstance(tool_call, dict):
+        candidate = tool_call.get("name") or tool_call.get("tool_name")
+        if isinstance(candidate, str) and candidate:
+            return candidate
+
+    item = raw_event.get("item")
+    if isinstance(item, dict):
+        candidate = item.get("name") or item.get("tool_name")
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None

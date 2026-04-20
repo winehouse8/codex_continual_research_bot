@@ -54,6 +54,16 @@ from .scheduler import (
     TopicScheduleCandidate,
     competition_pressure_score,
 )
+from .tools import (
+    DeniedCallAuditLog,
+    NormalizedToolResult,
+    ToolCall,
+    ToolExecutorWrapper,
+    ToolManifest,
+    ToolPolicyValidator,
+    ToolRegistry,
+    build_default_tool_registry,
+)
 
 __all__ = [
     "CanonicalGraphService",
@@ -67,6 +77,7 @@ __all__ = [
     "ExecutionPolicyError",
     "FailureCode",
     "FrontierSelectionInput",
+    "DeniedCallAuditLog",
     "HypothesisSnapshot",
     "InvalidTopicSnapshotError",
     "InvalidRunTransitionError",
@@ -91,10 +102,17 @@ __all__ = [
     "SessionInspectResult",
     "StaleTopicSnapshotError",
     "TerminalQueueWorkerError",
+    "NormalizedToolResult",
     "TopicSnapshot",
     "TopicScheduleCandidate",
+    "ToolCall",
+    "ToolExecutorWrapper",
+    "ToolManifest",
+    "ToolPolicyValidator",
+    "ToolRegistry",
     "WorkerExecutionResult",
     "WorkspaceRootMismatchError",
+    "build_default_tool_registry",
     "canonical_mapping_spec",
     "competition_pressure_score",
     "neo4j_constraints",
