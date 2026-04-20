@@ -75,6 +75,14 @@ from .scheduler import (
     TopicScheduleCandidate,
     competition_pressure_score,
 )
+from .scheduled import (
+    ScheduledEnqueueDecision,
+    ScheduledOperatorNotification,
+    ScheduledRunAction,
+    ScheduledRunExecutionResult,
+    ScheduledRunPolicy,
+    ScheduledRunService,
+)
 from .session_healthcheck_job import SessionHealthcheckJob, SessionHealthcheckResult
 from .session_lease_store import SessionLeaseConflictError, SessionLeaseStore
 from .session_manager import SessionManager, SessionManagerConfig, SessionPolicyError
@@ -134,6 +142,12 @@ __all__ = [
     "STATE_TRANSITIONS",
     "SchedulerPolicyEvaluator",
     "SchedulerSelection",
+    "ScheduledEnqueueDecision",
+    "ScheduledOperatorNotification",
+    "ScheduledRunAction",
+    "ScheduledRunExecutionResult",
+    "ScheduledRunPolicy",
+    "ScheduledRunService",
     "SessionHealthcheckJob",
     "SessionHealthcheckResult",
     "SessionInspectResult",
