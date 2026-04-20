@@ -208,6 +208,30 @@ def test_challenger_links_to_existing_best_hypothesis() -> None:
     assert any(edge.target == "hypothesis:hyp_001:v2" for edge in challenge_edges)
 
 
+def test_missing_current_best_snapshot_quarantines_challenger_linkage() -> None:
+    result = CanonicalGraphService().canonicalize(
+        proposal=load_proposal(),
+        context=CanonicalizationContext(
+            topic_id="topic_001",
+            run_id="run_001",
+            proposal_id="proposal_001",
+            current_best_hypothesis_id="hyp_missing",
+            existing_hypotheses=[],
+        ),
+    )
+
+    assert result.quarantined
+    assert any(
+        "current best hypothesis hyp_missing is missing" in reason
+        for reason in result.quarantine_reasons
+    )
+    assert not any(
+        edge.type == "CHALLENGES"
+        and edge.target == "hypothesis:hyp_missing:v1"
+        for edge in result.graph.edges
+    )
+
+
 def test_neo4j_schema_constraints_cover_phase2_labels() -> None:
     constraints = neo4j_constraints()
 

@@ -251,6 +251,13 @@ class CanonicalGraphService:
                     f"challenger {challenger.hypothesis_id}: current best hypothesis context is required"
                 )
                 continue
+            current_best = existing_by_id.get(context.current_best_hypothesis_id)
+            if current_best is None:
+                quarantine_reasons.append(
+                    f"challenger {challenger.hypothesis_id}: current best hypothesis "
+                    f"{context.current_best_hypothesis_id} is missing from context"
+                )
+                continue
             node = self._make_candidate_hypothesis_node(
                 challenger=challenger,
                 existing=existing_by_id.get(challenger.hypothesis_id),
@@ -273,9 +280,7 @@ class CanonicalGraphService:
                     source=node.id,
                     target=self._hypothesis_canonical_id(
                         context.current_best_hypothesis_id,
-                        existing_by_id.get(context.current_best_hypothesis_id).version
-                        if existing_by_id.get(context.current_best_hypothesis_id)
-                        else 1,
+                        current_best.version,
                     ),
                 )
             )
@@ -378,6 +383,7 @@ class CanonicalGraphService:
             nodes=sorted(nodes, key=lambda node: node.id),
             edges=sorted(edges, key=lambda edge: edge.id),
         )
+        quarantine_reasons.extend(self._edge_integrity_reasons(canonical_graph))
         digest = sha256(
             json.dumps(canonical_graph.model_dump(mode="json"), sort_keys=True).encode("utf-8")
         ).hexdigest()
@@ -501,6 +507,16 @@ class CanonicalGraphService:
         if not replaced:
             updated_nodes.append(new_node)
         return updated_nodes
+
+    def _edge_integrity_reasons(self, graph: CanonicalGraph) -> list[str]:
+        node_ids = {node.id for node in graph.nodes}
+        reasons: list[str] = []
+        for edge in graph.edges:
+            if edge.source not in node_ids:
+                reasons.append(f"edge {edge.id}: missing source node {edge.source}")
+            if edge.target not in node_ids:
+                reasons.append(f"edge {edge.id}: missing target node {edge.target}")
+        return reasons
 
 
 def canonical_mapping_spec() -> dict[str, dict[str, str]]:

@@ -22,7 +22,8 @@ This keeps source material, revisable belief state, and process lineage separate
 - Claims dedupe on normalized `text + temporal_scope + canonical evidence lineage`.
 - Claims without canonical provenance evidence are quarantined.
 - Temporal scope must be explicit enough for contradiction-safe storage. Free-form placeholders such as `unknown` are rejected.
-- Challenger hypotheses are linked to the current best hypothesis through a `CHALLENGES` edge.
+- Challenger hypotheses are linked to the current best hypothesis through a `CHALLENGES` edge only when the current-best node is present in the backend snapshot.
+- Every canonical edge must reference canonical nodes produced in the same graph result.
 - `RevisionAction.SUPERSEDE` creates a versioned hypothesis node and a `SUPERSEDES` edge to the stale predecessor.
 - Support-only argument sets are flagged as `stagnation_risk_support_only` for later revision pressure.
 
@@ -43,6 +44,7 @@ The service returns `CanonicalizationResult.quarantine_reasons` when any of the 
 - missing provenance evidence references
 - non-canonical temporal scope
 - missing current-best linkage for challengers
+- graph edge source or target missing from the canonical node set
 - invalid supersession lineage
 
 When quarantine reasons exist, the result is considered blocked for graph persistence.
