@@ -83,3 +83,19 @@ This matrix defines the minimum validation evidence for the topic snapshot read 
 | `test_valid_competition_proposal_advances_to_normalizing` | accepted proposal lifecycle advancement | Valid runtime output cannot proceed after satisfying the Phase 3 gate |
 | `test_accepted_proposal_cannot_resume_runtime_execution` | runtime resume boundary after proposal acceptance | Accepted runtime output is re-executed after the run has already advanced to `normalizing` |
 | `test_stale_intent_cannot_advance_requeued_run_from_new_snapshot` | proposal acceptance replay guard | A stale runtime intent can advance a requeued run pinned to a newer snapshot |
+
+# Phase 7 Test Matrix
+
+This matrix defines the minimum validation evidence for the output validator, repair loop, quarantine store, and compaction artifact boundary added in `DEE-49`.
+
+| Test | Coverage | Failure guarded |
+| --- | --- | --- |
+| `test_happy_path_exec_ingestion_persists_events_and_artifacts` | validated proposal persistence artifacts | Valid runtime output is quarantined or misses validation evidence |
+| `test_malformed_json_proposal_is_repaired_before_validation` | syntax validator and minimal repair prompt path | Malformed JSON reaches persistence or fails without a bounded repair attempt |
+| `test_invalid_enum_and_missing_required_field_are_repaired` | schema validator and repair attempt orchestration | Enum drift or missing required fields bypass the repair loop |
+| `test_unresolved_citation_placeholder_is_rejected_and_quarantined` | policy validator and quarantine artifact | Placeholder citations reach graph-write candidates |
+| `test_hypothesis_id_inconsistency_is_rejected_and_quarantined` | semantic validator for hypothesis references | Proposal references a hypothesis outside the backend snapshot or challengers |
+| `test_repair_budget_exhausted_quarantines_invalid_output` | repair budget handling | The runtime loops indefinitely or drops invalid output without quarantine |
+| `test_compaction_artifact_preserves_referential_integrity` | `context.compacted` payload and retained artifact references | Compaction breaks evidence reference integrity |
+| `test_tool_result_omitted_after_compaction_is_rejected` | compaction-aware semantic validation | Proposal uses tool/artifact output omitted from compacted context |
+| `test_latest_compaction_retention_replaces_older_retention` | multiple `context.compacted` events during one run | Later compaction drops an artifact but older retention keeps the proposal passable |

@@ -45,6 +45,7 @@ from .runtime import (
     CodexTransportTimeoutError,
     ExecutionPolicyError,
     MalformedJSONLEventError,
+    OutputSchemaValidationError,
     RuntimeExecutionResult,
     WorkspaceRootMismatchError,
 )
@@ -84,6 +85,7 @@ __all__ = [
     "MalformedJSONLEventError",
     "MalformedRunInputError",
     "MissingTopicSnapshotError",
+    "OutputSchemaValidationError",
     "ProposalBundle",
     "QueueWorker",
     "QueueJob",

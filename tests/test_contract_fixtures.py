@@ -159,6 +159,16 @@ def test_session_inspect_rejects_mismatched_fingerprint() -> None:
                 "result_digest": "sha256:2c7ed8e0a3de4977dd4c67d9390fe2e20ce95ccf0df238dab28c166a4630bf46",
             },
         ),
+        (
+            "context.compacted",
+            {
+                "dropped_turns": [1, 2],
+                "summary_artifact_id": "ctxsum_001",
+                "token_savings_estimate": 1200,
+                "retained_artifact_ids": ["src_001"],
+                "retained_tool_call_ids": ["call_001"],
+            },
+        ),
         ("output.validated", {"schema_id": "proposal_bundle.v1", "repair_attempts": 1}),
         (
             "run.completed",

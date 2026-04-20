@@ -81,6 +81,7 @@ class RuntimeEventType(str, Enum):
     CODEX_EVENT = "codex.event"
     TOOL_STARTED = "tool.started"
     TOOL_COMPLETED = "tool.completed"
+    CONTEXT_COMPACTED = "context.compacted"
     OUTPUT_VALIDATED = "output.validated"
     RUN_COMPLETED = "run.completed"
     RUN_FAILED = "run.failed"
@@ -367,6 +368,14 @@ class ToolCompletedPayload(StrictModel):
     result_digest: StrictStr = Field(min_length=1)
 
 
+class ContextCompactedPayload(StrictModel):
+    dropped_turns: list[StrictInt]
+    summary_artifact_id: StrictStr = Field(min_length=1)
+    token_savings_estimate: StrictInt = Field(ge=0)
+    retained_artifact_ids: list[StrictStr]
+    retained_tool_call_ids: list[StrictStr]
+
+
 class OutputValidatedPayload(StrictModel):
     schema_id: StrictStr = Field(min_length=1)
     repair_attempts: StrictInt = Field(ge=0)
@@ -387,6 +396,7 @@ RuntimeEventPayload = (
     | CodexRawEventPayload
     | ToolStartedPayload
     | ToolCompletedPayload
+    | ContextCompactedPayload
     | OutputValidatedPayload
     | RunCompletedPayload
     | RunFailedPayload
@@ -408,6 +418,7 @@ class RuntimeEvent(StrictModel):
             RuntimeEventType.CODEX_EVENT: CodexRawEventPayload,
             RuntimeEventType.TOOL_STARTED: ToolStartedPayload,
             RuntimeEventType.TOOL_COMPLETED: ToolCompletedPayload,
+            RuntimeEventType.CONTEXT_COMPACTED: ContextCompactedPayload,
             RuntimeEventType.OUTPUT_VALIDATED: OutputValidatedPayload,
             RuntimeEventType.RUN_COMPLETED: RunCompletedPayload,
             RuntimeEventType.RUN_FAILED: RunFailedPayload,

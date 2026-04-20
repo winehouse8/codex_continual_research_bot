@@ -11,6 +11,7 @@ from codex_continual_research_bot.contracts import (
     ExecutionBudgets,
     FailureCode,
     NetworkMode,
+    OutputContract,
     QueueJob,
     RuntimeEventType,
     SandboxMode,
@@ -29,6 +30,7 @@ from codex_continual_research_bot.runtime import (
     CodexTransportTimeoutError,
     ExecutionPolicyError,
     MalformedJSONLEventError,
+    OutputSchemaValidationError,
     WorkspaceRootMismatchError,
     SubprocessCodexExecLauncher,
 )
@@ -54,6 +56,7 @@ class FakeLauncher:
     timed_out: bool = False
     stderr: str = ""
     final_payload: str | None = None
+    final_payloads: tuple[str, ...] = ()
     invocations: list[CodexExecInvocation] = field(default_factory=list)
 
     def run(
@@ -68,9 +71,13 @@ class FakeLauncher:
                 emitted_lines.append(line)
             else:
                 stdout_handler(line)
-        if self.final_payload is not None:
+        payload = self.final_payload
+        if self.final_payloads:
+            payload_index = min(len(self.invocations) - 1, len(self.final_payloads) - 1)
+            payload = self.final_payloads[payload_index]
+        if payload is not None:
             invocation.final_message_path.write_text(
-                self.final_payload,
+                payload,
                 encoding="utf-8",
             )
         return CodexExecProcessResult(
@@ -186,9 +193,26 @@ def proposal_payload_with_meta(*, turn_count: int = 0, tool_call_count: int = 0)
     return json.dumps(payload)
 
 
+def proposal_payload_with_update(updater) -> str:
+    payload = json.loads(proposal_payload())
+    updater(payload)
+    return json.dumps(payload)
+
+
 def raw_event(event_type: str, **extra: object) -> str:
     payload = {"type": event_type, **extra}
     return json.dumps(payload, sort_keys=True)
+
+
+def context_compacted_event(*, retained_artifact_ids: list[str]) -> str:
+    return raw_event(
+        "context.compacted",
+        dropped_turns=[1, 2],
+        summary_artifact_id="ctxsum_001",
+        token_savings_estimate=1200,
+        retained_artifact_ids=retained_artifact_ids,
+        retained_tool_call_ids=["call_001"],
+    )
 
 
 def with_budgets(
@@ -226,6 +250,18 @@ def with_tool_policy(
                 or ["web.search", "web.fetch", "internal.graph_query"],
                 network_mode=network_mode,
                 sandbox_mode=sandbox_mode,
+            )
+        }
+    )
+    return intent.model_copy(update={"execution_request": request})
+
+
+def with_output_contract(intent, *, max_repair_attempts: int):
+    request = intent.execution_request.model_copy(
+        update={
+            "output_contract": OutputContract(
+                schema_id=intent.execution_request.output_contract.schema_id,
+                max_repair_attempts=max_repair_attempts,
             )
         }
     )
@@ -299,6 +335,274 @@ def test_happy_path_exec_ingestion_persists_events_and_artifacts(
     assert (result.artifacts_dir / "raw_events.jsonl").exists()
     assert (result.artifacts_dir / "proposal_bundle.json").exists()
     assert (result.artifacts_dir / "metrics.json").exists()
+    assert not (result.artifacts_dir / "quarantine").exists()
+
+
+def test_malformed_json_proposal_is_repaired_before_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    launcher = FakeLauncher(
+        stdout_lines=(raw_event("turn.started"),),
+        final_payloads=("{not json", proposal_payload()),
+    )
+
+    result = CodexRuntimeCoordinator(
+        ledger,
+        make_config(tmp_path),
+        launcher=launcher,
+    ).execute(intent)
+
+    assert len(launcher.invocations) == 2
+    assert result.proposal.execution_meta.repair_attempts == 1
+    output_validated = ledger.list_run_events("run_001")[-2]
+    assert output_validated.event_type == RuntimeEventType.OUTPUT_VALIDATED
+    assert output_validated.payload.repair_attempts == 1
+    assert (result.artifacts_dir / "validation_failure_000.json").exists()
+    assert (result.artifacts_dir / "final_message_repair_001.json").exists()
+
+
+def test_invalid_enum_and_missing_required_field_are_repaired(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    invalid_payload = proposal_payload_with_update(
+        lambda payload: (
+            payload["revision_proposals"][0].update({"action": "promote"}),
+            payload["evidence_candidates"][0].pop("source_url"),
+        )
+    )
+    launcher = FakeLauncher(
+        stdout_lines=(raw_event("turn.started"),),
+        final_payloads=(invalid_payload, proposal_payload()),
+    )
+
+    result = CodexRuntimeCoordinator(
+        ledger,
+        make_config(tmp_path),
+        launcher=launcher,
+    ).execute(intent)
+
+    assert len(launcher.invocations) == 2
+    assert result.proposal.execution_meta.repair_attempts == 1
+    failure_artifact = json.loads(
+        (result.artifacts_dir / "validation_failure_000.json").read_text()
+    )
+    messages = [violation["message"] for violation in failure_artifact["violations"]]
+    assert any("Field required" in message for message in messages)
+    assert any("Input should be" in message for message in messages)
+
+
+def test_unresolved_citation_placeholder_is_rejected_and_quarantined(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    invalid_payload = proposal_payload_with_update(
+        lambda payload: payload.update(
+            {"summary_draft": "The hypothesis is supported. [citation needed]"}
+        )
+    )
+    launcher = FakeLauncher(
+        stdout_lines=(raw_event("turn.started"),),
+        final_payload=invalid_payload,
+    )
+
+    with pytest.raises(OutputSchemaValidationError) as excinfo:
+        CodexRuntimeCoordinator(
+            ledger,
+            make_config(tmp_path),
+            launcher=launcher,
+        ).execute(intent)
+
+    assert excinfo.value.retryable is False
+    assert "quarantined non-repairable invalid proposal" in excinfo.value.detail
+    attempt_dir = tmp_path / "artifacts" / "run_001" / "attempt_001"
+    quarantine = attempt_dir / "quarantine" / "proposal_quarantine_000.json"
+    assert quarantine.exists()
+    payload = json.loads(quarantine.read_text())
+    assert payload["payload"]["violations"][0]["layer"] == "policy"
+    assert len(launcher.invocations) == 1
+
+
+def test_hypothesis_id_inconsistency_is_rejected_and_quarantined(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    invalid_payload = proposal_payload_with_update(
+        lambda payload: payload["arguments"][0].update(
+            {"target_hypothesis_id": "hyp_missing"}
+        )
+    )
+    launcher = FakeLauncher(
+        stdout_lines=(raw_event("turn.started"),),
+        final_payload=invalid_payload,
+    )
+
+    with pytest.raises(OutputSchemaValidationError) as excinfo:
+        CodexRuntimeCoordinator(
+            ledger,
+            make_config(tmp_path),
+            launcher=launcher,
+        ).execute(intent)
+
+    assert excinfo.value.retryable is False
+    assert "target_hypothesis_id" in excinfo.value.detail
+    attempt_dir = tmp_path / "artifacts" / "run_001" / "attempt_001"
+    assert (attempt_dir / "quarantine" / "proposal_quarantine_000.json").exists()
+
+
+def test_repair_budget_exhausted_quarantines_invalid_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    intent = with_output_contract(intent, max_repair_attempts=0)
+    launcher = FakeLauncher(
+        stdout_lines=(raw_event("turn.started"),),
+        final_payload="{not json",
+    )
+
+    with pytest.raises(OutputSchemaValidationError) as excinfo:
+        CodexRuntimeCoordinator(
+            ledger,
+            make_config(tmp_path),
+            launcher=launcher,
+        ).execute(intent)
+
+    assert excinfo.value.retryable is False
+    assert "repair budget exhausted" in excinfo.value.detail
+    attempt_dir = tmp_path / "artifacts" / "run_001" / "attempt_001"
+    assert (attempt_dir / "validation_failure_000.json").exists()
+    assert (attempt_dir / "quarantine" / "proposal_quarantine_000.json").exists()
+
+
+def test_compaction_artifact_preserves_referential_integrity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    launcher = FakeLauncher(
+        stdout_lines=(
+            raw_event("turn.started"),
+            context_compacted_event(retained_artifact_ids=["src_001"]),
+        ),
+        final_payload=proposal_payload(),
+    )
+
+    result = CodexRuntimeCoordinator(
+        ledger,
+        make_config(tmp_path),
+        launcher=launcher,
+    ).execute(intent)
+
+    assert result.proposal.evidence_candidates[0].artifact_id == "src_001"
+    assert event_types(ledger) == [
+        RuntimeEventType.RUN_STARTED,
+        RuntimeEventType.CODEX_EVENT,
+        RuntimeEventType.CONTEXT_COMPACTED,
+        RuntimeEventType.OUTPUT_VALIDATED,
+        RuntimeEventType.RUN_COMPLETED,
+    ]
+
+
+def test_tool_result_omitted_after_compaction_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    launcher = FakeLauncher(
+        stdout_lines=(
+            raw_event("turn.started"),
+            context_compacted_event(retained_artifact_ids=["src_other"]),
+        ),
+        final_payload=proposal_payload(),
+    )
+
+    with pytest.raises(OutputSchemaValidationError) as excinfo:
+        CodexRuntimeCoordinator(
+            ledger,
+            make_config(tmp_path),
+            launcher=launcher,
+        ).execute(intent)
+
+    assert "compacted context omitted" in excinfo.value.detail
+    attempt_dir = tmp_path / "artifacts" / "run_001" / "attempt_001"
+    quarantine = attempt_dir / "quarantine" / "proposal_quarantine_000.json"
+    payload = json.loads(quarantine.read_text())
+    assert payload["payload"]["violations"][0]["layer"] == "semantic"
+
+
+def test_latest_compaction_retention_replaces_older_retention(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    launcher = FakeLauncher(
+        stdout_lines=(
+            raw_event("turn.started"),
+            context_compacted_event(retained_artifact_ids=["src_001"]),
+            context_compacted_event(retained_artifact_ids=["src_other"]),
+        ),
+        final_payload=proposal_payload(),
+    )
+
+    with pytest.raises(OutputSchemaValidationError) as excinfo:
+        CodexRuntimeCoordinator(
+            ledger,
+            make_config(tmp_path),
+            launcher=launcher,
+        ).execute(intent)
+
+    assert "compacted context omitted" in excinfo.value.detail
+    assert event_types(ledger) == [
+        RuntimeEventType.RUN_STARTED,
+        RuntimeEventType.CODEX_EVENT,
+        RuntimeEventType.CONTEXT_COMPACTED,
+        RuntimeEventType.CONTEXT_COMPACTED,
+        RuntimeEventType.RUN_FAILED,
+    ]
+    attempt_dir = tmp_path / "artifacts" / "run_001" / "attempt_001"
+    quarantine = attempt_dir / "quarantine" / "proposal_quarantine_000.json"
+    assert quarantine.exists()
+
+
+def test_empty_compaction_retention_rejects_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    launcher = FakeLauncher(
+        stdout_lines=(
+            raw_event("turn.started"),
+            context_compacted_event(retained_artifact_ids=[]),
+        ),
+        final_payload=proposal_payload(),
+    )
+
+    with pytest.raises(OutputSchemaValidationError) as excinfo:
+        CodexRuntimeCoordinator(
+            ledger,
+            make_config(tmp_path),
+            launcher=launcher,
+        ).execute(intent)
+
+    assert "compacted context omitted" in excinfo.value.detail
+    attempt_dir = tmp_path / "artifacts" / "run_001" / "attempt_001"
+    quarantine = attempt_dir / "quarantine" / "proposal_quarantine_000.json"
+    assert quarantine.exists()
 
 
 def test_malformed_jsonl_event_rejected_fail_closed(

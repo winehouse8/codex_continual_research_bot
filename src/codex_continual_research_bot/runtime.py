@@ -16,6 +16,7 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from codex_continual_research_bot.contracts import (
+    ContextCompactedPayload,
     CodexRawEventPayload,
     ExecutionBudgets,
     FailureCode,
@@ -29,6 +30,13 @@ from codex_continual_research_bot.contracts import (
     RunStartedPayload,
     RuntimeEvent,
     RuntimeEventType,
+)
+from codex_continual_research_bot.output_validation import (
+    ProposalValidationContext,
+    ProposalValidationResult,
+    ProposalValidationViolation,
+    ProposalValidator,
+    build_minimal_repair_prompt,
 )
 from codex_continual_research_bot.persistence import SQLitePersistenceLedger
 from codex_continual_research_bot.tools import (
@@ -48,6 +56,7 @@ TOOL_CALL_START_EVENTS = frozenset(
         "tool_call_started",
     }
 )
+CONTEXT_COMPACTED_EVENTS = frozenset({"context.compacted", "context_compacted"})
 
 
 def _utcnow() -> datetime:
@@ -268,6 +277,17 @@ class RuntimePromptBuilder:
             f"{request_json}\n"
         )
 
+    def build_repair(
+        self,
+        *,
+        previous_output: str,
+        violations: tuple[ProposalValidationViolation, ...],
+    ) -> str:
+        return build_minimal_repair_prompt(
+            previous_output=previous_output,
+            violations=violations,
+        )
+
 
 class RuntimeArtifactStore:
     """Stores raw JSONL events, normalized events, final output, and metrics."""
@@ -320,6 +340,31 @@ class RuntimeArtifactStore:
         path = attempt_dir / name
         path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def store_quarantine(
+        self,
+        *,
+        attempt_dir: Path,
+        name: str,
+        payload: object,
+        raw_output: str,
+    ) -> Path:
+        path = attempt_dir / "quarantine" / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "payload": payload,
+                    "raw_output": raw_output,
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
             encoding="utf-8",
         )
         return path
@@ -400,6 +445,15 @@ class CodexJSONLEventNormalizer:
         turn_index = raw_event.get("turn_index", 0)
         if not isinstance(turn_index, int) or turn_index < 0:
             turn_index = 0
+        if raw_event_type.lower() in CONTEXT_COMPACTED_EVENTS:
+            return RuntimeEvent(
+                run_id=run_id,
+                seq=seq,
+                event_type=RuntimeEventType.CONTEXT_COMPACTED,
+                turn_index=turn_index,
+                timestamp=timestamp or _utcnow(),
+                payload=_context_compacted_payload(raw_event, seq=seq),
+            )
         return RuntimeEvent(
             run_id=run_id,
             seq=seq,
@@ -432,6 +486,7 @@ class CodexRuntimeCoordinator:
         self._prompt_builder = prompt_builder or RuntimePromptBuilder()
         self._artifact_store = RuntimeArtifactStore(config.artifact_root)
         self._normalizer = CodexJSONLEventNormalizer(self._artifact_store)
+        self._proposal_validator = ProposalValidator()
         self._tool_registry = tool_registry or build_default_tool_registry()
         self._tool_policy_validator = ToolPolicyValidator(
             self._tool_registry,
@@ -460,27 +515,19 @@ class CodexRuntimeCoordinator:
         )
         seq += 1
 
-        try:
-            invocation = self._prepare_invocation(
-                intent.execution_request,
-                attempt_dir=attempt_dir,
-            )
-        except CodexRuntimeError as exc:
-            self._record_failure(
-                attempt_dir=attempt_dir,
-                run_id=intent.run_id,
-                seq=seq,
-                failure_code=exc.failure_code,
-                detail=exc.detail,
-            )
-            raise
-
         raw_event_count = 0
         observed_turn_count = 0
         observed_tool_call_count = 0
+        retained_artifact_ids_after_compaction: set[str] | None = None
+        repair_attempts = 0
+        repair_prompt: str | None = None
+        proposal: ProposalBundle | None = None
+        exit_code = 0
+        timed_out = False
 
         def handle_stdout_line(line: str) -> None:
             nonlocal seq, raw_event_count, observed_turn_count, observed_tool_call_count
+            nonlocal retained_artifact_ids_after_compaction
             if not line.strip():
                 return
             try:
@@ -502,18 +549,23 @@ class CodexRuntimeCoordinator:
             self._append_event(attempt_dir=attempt_dir, event=event)
             seq += 1
             raw_event_count += 1
-            raw_event_type = event.payload.raw_event_type
-            if _is_turn_start_event(raw_event_type):
-                observed_turn_count += 1
-            if _is_tool_call_start_event(raw_event_type):
-                self._enforce_observed_tool_policy(
-                    request=intent.execution_request,
-                    raw_line=line,
-                    attempt_dir=attempt_dir,
-                    run_id=intent.run_id,
-                    seq=seq,
+            if event.event_type == RuntimeEventType.CONTEXT_COMPACTED:
+                retained_artifact_ids_after_compaction = set(
+                    event.payload.retained_artifact_ids
                 )
-                observed_tool_call_count += 1
+            else:
+                raw_event_type = event.payload.raw_event_type
+                if _is_turn_start_event(raw_event_type):
+                    observed_turn_count += 1
+                if _is_tool_call_start_event(raw_event_type):
+                    self._enforce_observed_tool_policy(
+                        request=intent.execution_request,
+                        raw_line=line,
+                        attempt_dir=attempt_dir,
+                        run_id=intent.run_id,
+                        seq=seq,
+                    )
+                    observed_tool_call_count += 1
             self._enforce_observed_runtime_budgets(
                 budgets=intent.execution_request.budgets,
                 observed_turn_count=observed_turn_count,
@@ -523,66 +575,141 @@ class CodexRuntimeCoordinator:
                 seq=seq,
             )
 
-        result = self._launcher.run(invocation, stdout_handler=handle_stdout_line)
-        for line in result.stdout_lines:
-            handle_stdout_line(line)
+        while True:
+            try:
+                invocation = self._prepare_invocation(
+                    intent.execution_request,
+                    attempt_dir=attempt_dir,
+                    prompt_override=repair_prompt,
+                    final_message_name=(
+                        "final_message.json"
+                        if repair_attempts == 0
+                        else f"final_message_repair_{repair_attempts:03d}.json"
+                    ),
+                )
+            except CodexRuntimeError as exc:
+                self._record_failure(
+                    attempt_dir=attempt_dir,
+                    run_id=intent.run_id,
+                    seq=seq,
+                    failure_code=exc.failure_code,
+                    detail=exc.detail,
+                )
+                raise
 
-        if result.timed_out:
-            detail = (
-                "codex exec exceeded "
-                f"{intent.execution_request.budgets.max_runtime_seconds}s runtime budget"
-            )
-            self._record_failure(
+            raw_event_count_before_attempt = raw_event_count
+            result = self._launcher.run(invocation, stdout_handler=handle_stdout_line)
+            for line in result.stdout_lines:
+                handle_stdout_line(line)
+            exit_code = result.exit_code
+            timed_out = result.timed_out
+
+            if result.timed_out:
+                detail = (
+                    "codex exec exceeded "
+                    f"{intent.execution_request.budgets.max_runtime_seconds}s runtime budget"
+                )
+                self._record_failure(
+                    attempt_dir=attempt_dir,
+                    run_id=intent.run_id,
+                    seq=seq,
+                    failure_code=FailureCode.CODEX_TRANSPORT_TIMEOUT,
+                    detail=detail,
+                )
+                raise CodexTransportTimeoutError(
+                    failure_code=FailureCode.CODEX_TRANSPORT_TIMEOUT,
+                    detail=detail,
+                    retryable=True,
+                )
+
+            if raw_event_count == raw_event_count_before_attempt:
+                detail = "codex exec produced no JSONL events; refusing final-output-only result"
+                self._record_failure(
+                    attempt_dir=attempt_dir,
+                    run_id=intent.run_id,
+                    seq=seq,
+                    failure_code=FailureCode.CODEX_PROCESS_CRASH,
+                    detail=detail,
+                )
+                raise CodexProcessCrashError(
+                    failure_code=FailureCode.CODEX_PROCESS_CRASH,
+                    detail=detail,
+                    retryable=True,
+                )
+
+            if result.exit_code != 0:
+                detail = f"codex exec exited with status {result.exit_code}"
+                if result.stderr.strip():
+                    detail = f"{detail}: {result.stderr.strip()}"
+                self._record_failure(
+                    attempt_dir=attempt_dir,
+                    run_id=intent.run_id,
+                    seq=seq,
+                    failure_code=FailureCode.CODEX_PROCESS_CRASH,
+                    detail=detail,
+                )
+                raise CodexProcessCrashError(
+                    failure_code=FailureCode.CODEX_PROCESS_CRASH,
+                    detail=detail,
+                    retryable=True,
+                )
+
+            validation = self._validate_final_output(
+                path=invocation.final_message_path,
                 attempt_dir=attempt_dir,
-                run_id=intent.run_id,
-                seq=seq,
-                failure_code=FailureCode.CODEX_TRANSPORT_TIMEOUT,
-                detail=detail,
+                request=intent.execution_request,
+                retained_artifact_ids_after_compaction=(
+                    frozenset(retained_artifact_ids_after_compaction)
+                    if retained_artifact_ids_after_compaction is not None
+                    else None
+                ),
+                repair_attempts=repair_attempts,
             )
-            raise CodexTransportTimeoutError(
-                failure_code=FailureCode.CODEX_TRANSPORT_TIMEOUT,
-                detail=detail,
-                retryable=True,
+            if validation.valid:
+                proposal = validation.proposal
+                break
+            assert validation.violations
+            previous_output = (
+                invocation.final_message_path.read_text(encoding="utf-8")
+                if invocation.final_message_path.exists()
+                else ""
             )
-
-        if raw_event_count == 0:
-            detail = "codex exec produced no JSONL events; refusing final-output-only result"
-            self._record_failure(
+            self._store_validation_failure(
                 attempt_dir=attempt_dir,
-                run_id=intent.run_id,
-                seq=seq,
-                failure_code=FailureCode.CODEX_PROCESS_CRASH,
-                detail=detail,
+                repair_attempts=repair_attempts,
+                validation=validation,
+                raw_output=previous_output,
             )
-            raise CodexProcessCrashError(
-                failure_code=FailureCode.CODEX_PROCESS_CRASH,
-                detail=detail,
-                retryable=True,
+            if (
+                not validation.repairable
+                or repair_attempts >= intent.execution_request.output_contract.max_repair_attempts
+            ):
+                detail = self._quarantine_invalid_output(
+                    attempt_dir=attempt_dir,
+                    repair_attempts=repair_attempts,
+                    validation=validation,
+                    raw_output=previous_output,
+                )
+                self._record_failure(
+                    attempt_dir=attempt_dir,
+                    run_id=intent.run_id,
+                    seq=seq,
+                    failure_code=FailureCode.OUTPUT_SCHEMA_VALIDATION_FAILED,
+                    detail=detail,
+                )
+                raise OutputSchemaValidationError(
+                    failure_code=FailureCode.OUTPUT_SCHEMA_VALIDATION_FAILED,
+                    detail=detail,
+                    retryable=False,
+                )
+
+            repair_attempts += 1
+            repair_prompt = self._prompt_builder.build_repair(
+                previous_output=previous_output,
+                violations=validation.violations,
             )
 
-        if result.exit_code != 0:
-            detail = f"codex exec exited with status {result.exit_code}"
-            if result.stderr.strip():
-                detail = f"{detail}: {result.stderr.strip()}"
-            self._record_failure(
-                attempt_dir=attempt_dir,
-                run_id=intent.run_id,
-                seq=seq,
-                failure_code=FailureCode.CODEX_PROCESS_CRASH,
-                detail=detail,
-            )
-            raise CodexProcessCrashError(
-                failure_code=FailureCode.CODEX_PROCESS_CRASH,
-                detail=detail,
-                retryable=True,
-            )
-
-        proposal = self._load_proposal(
-            path=invocation.final_message_path,
-            attempt_dir=attempt_dir,
-            run_id=intent.run_id,
-            seq=seq,
-        )
+        assert proposal is not None
         self._enforce_proposal_runtime_budgets(
             proposal=proposal,
             budgets=intent.execution_request.budgets,
@@ -609,7 +736,7 @@ class CodexRuntimeCoordinator:
                 timestamp=_utcnow(),
                 payload=OutputValidatedPayload(
                     schema_id=intent.execution_request.output_contract.schema_id,
-                    repair_attempts=0,
+                    repair_attempts=repair_attempts,
                 ),
             ),
         )
@@ -636,8 +763,8 @@ class CodexRuntimeCoordinator:
             raw_event_count=raw_event_count,
             normalized_event_count=raw_event_count + 3,
             artifact_count=metrics_artifact_count,
-            exit_code=result.exit_code,
-            timed_out=result.timed_out,
+            exit_code=exit_code,
+            timed_out=timed_out,
         )
         self._artifact_store.store_json(
             attempt_dir=attempt_dir,
@@ -671,6 +798,8 @@ class CodexRuntimeCoordinator:
         request: RunExecutionRequest,
         *,
         attempt_dir: Path,
+        prompt_override: str | None = None,
+        final_message_name: str = "final_message.json",
     ) -> CodexExecInvocation:
         workspace_root = self._config.workspace_root.resolve()
         if not workspace_root.exists() or not workspace_root.is_dir():
@@ -696,9 +825,9 @@ class CodexRuntimeCoordinator:
                 retryable=False,
             )
 
-        prompt = self._prompt_builder.build(request)
+        prompt = prompt_override or self._prompt_builder.build(request)
         self._enforce_budgets(prompt=prompt, budgets=request.budgets)
-        final_message_path = attempt_dir / "final_message.json"
+        final_message_path = attempt_dir / final_message_name
         command = (
             self._config.codex_binary,
             "exec",
@@ -890,20 +1019,21 @@ class CodexRuntimeCoordinator:
             retryable=False,
         )
 
-    def _load_proposal(
+    def _validate_final_output(
         self,
         *,
         path: Path,
         attempt_dir: Path,
-        run_id: str,
-        seq: int,
-    ) -> ProposalBundle:
+        request: RunExecutionRequest,
+        retained_artifact_ids_after_compaction: frozenset[str] | None,
+        repair_attempts: int,
+    ) -> ProposalValidationResult:
         if not path.exists():
             detail = f"codex exec did not write final message artifact: {path}"
             self._record_failure(
                 attempt_dir=attempt_dir,
-                run_id=run_id,
-                seq=seq,
+                run_id=request.run_id,
+                seq=self._next_event_seq(request.run_id),
                 failure_code=FailureCode.CODEX_PROCESS_CRASH,
                 detail=detail,
             )
@@ -913,22 +1043,74 @@ class CodexRuntimeCoordinator:
                 retryable=True,
             )
         final_text = path.read_text(encoding="utf-8")
-        try:
-            return ProposalBundle.model_validate_json(final_text)
-        except ValidationError as exc:
-            detail = "final output did not match ProposalBundle schema"
-            self._record_failure(
-                attempt_dir=attempt_dir,
-                run_id=run_id,
-                seq=seq,
-                failure_code=FailureCode.OUTPUT_SCHEMA_VALIDATION_FAILED,
-                detail=detail,
-            )
-            raise OutputSchemaValidationError(
-                failure_code=FailureCode.OUTPUT_SCHEMA_VALIDATION_FAILED,
-                detail=detail,
-                retryable=True,
-            ) from exc
+        validation = self._proposal_validator.validate_text(
+            final_text,
+            context=ProposalValidationContext(
+                request=request,
+                retained_artifact_ids_after_compaction=retained_artifact_ids_after_compaction,
+            ),
+        )
+        if validation.valid and validation.proposal is not None:
+            validation.proposal.execution_meta.repair_attempts = repair_attempts
+        return validation
+
+    def _store_validation_failure(
+        self,
+        *,
+        attempt_dir: Path,
+        repair_attempts: int,
+        validation: ProposalValidationResult,
+        raw_output: str,
+    ) -> None:
+        self._artifact_store.store_json(
+            attempt_dir=attempt_dir,
+            name=f"validation_failure_{repair_attempts:03d}.json",
+            payload={
+                "raw_output_digest": _digest_text(raw_output),
+                "repairable": validation.repairable,
+                "violations": [
+                    {
+                        "layer": violation.layer.value,
+                        "location": violation.location,
+                        "message": violation.message,
+                        "repairable": violation.repairable,
+                    }
+                    for violation in validation.violations
+                ],
+            },
+        )
+
+    def _quarantine_invalid_output(
+        self,
+        *,
+        attempt_dir: Path,
+        repair_attempts: int,
+        validation: ProposalValidationResult,
+        raw_output: str,
+    ) -> str:
+        violation_payload = [
+            {
+                "layer": violation.layer.value,
+                "location": violation.location,
+                "message": violation.message,
+                "repairable": violation.repairable,
+            }
+            for violation in validation.violations
+        ]
+        self._artifact_store.store_quarantine(
+            attempt_dir=attempt_dir,
+            name=f"proposal_quarantine_{repair_attempts:03d}.json",
+            payload={
+                "raw_output_digest": _digest_text(raw_output),
+                "repair_attempts": repair_attempts,
+                "violations": violation_payload,
+            },
+            raw_output=raw_output,
+        )
+        first_violation = validation.violations[0].format()
+        if validation.repairable:
+            return f"repair budget exhausted; quarantined invalid proposal: {first_violation}"
+        return f"quarantined non-repairable invalid proposal: {first_violation}"
 
     def _record_failure(
         self,
@@ -965,6 +1147,30 @@ def _is_turn_start_event(raw_event_type: str) -> bool:
 
 def _is_tool_call_start_event(raw_event_type: str) -> bool:
     return raw_event_type.lower() in TOOL_CALL_START_EVENTS
+
+
+def _context_compacted_payload(raw_event: dict[str, object], *, seq: int) -> ContextCompactedPayload:
+    payload = raw_event.get("payload")
+    source = payload if isinstance(payload, dict) else raw_event
+    try:
+        return ContextCompactedPayload.model_validate(
+            {
+                "dropped_turns": source.get("dropped_turns", []),
+                "summary_artifact_id": source.get(
+                    "summary_artifact_id",
+                    f"context_summary_{seq:06d}",
+                ),
+                "token_savings_estimate": source.get("token_savings_estimate", 0),
+                "retained_artifact_ids": source.get("retained_artifact_ids", []),
+                "retained_tool_call_ids": source.get("retained_tool_call_ids", []),
+            }
+        )
+    except ValidationError as exc:
+        raise MalformedJSONLEventError(
+            failure_code=FailureCode.MALFORMED_CODEX_EVENT,
+            detail=f"context compaction event at sequence {seq} has invalid payload",
+            retryable=False,
+        ) from exc
 
 
 def _extract_tool_name_from_raw_event(raw_line: str) -> str | None:
