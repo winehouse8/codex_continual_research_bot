@@ -27,6 +27,7 @@ from codex_continual_research_bot.persistence import (
     QueueMutationMismatchError,
     SQLitePersistenceLedger,
 )
+from codex_continual_research_bot.runtime import CodexRuntimeError
 
 
 def _utcnow() -> datetime:
@@ -254,6 +255,21 @@ class QueueWorker:
                 now=now,
             )
         except TerminalQueueWorkerError as exc:
+            return self._dead_letter(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                failure_code=exc.failure_code,
+                detail=exc.detail,
+            )
+        except CodexRuntimeError as exc:
+            if exc.retryable:
+                return self._nack(
+                    queue_item_id=queue_item_id,
+                    run_id=run_id,
+                    failure_code=exc.failure_code,
+                    detail=exc.detail,
+                    now=now,
+                )
             return self._dead_letter(
                 queue_item_id=queue_item_id,
                 run_id=run_id,

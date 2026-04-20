@@ -153,9 +153,37 @@ def proposal_payload() -> str:
     return (ROOT / "fixtures" / "proposal_bundle.json").read_text(encoding="utf-8")
 
 
+def proposal_payload_with_meta(*, turn_count: int = 0, tool_call_count: int = 0) -> str:
+    payload = json.loads(proposal_payload())
+    payload["execution_meta"]["turn_count"] = turn_count
+    payload["execution_meta"]["tool_call_count"] = tool_call_count
+    return json.dumps(payload)
+
+
 def raw_event(event_type: str, **extra: object) -> str:
     payload = {"type": event_type, **extra}
     return json.dumps(payload, sort_keys=True)
+
+
+def with_budgets(
+    intent,
+    *,
+    max_turns: int = 12,
+    max_tool_calls: int = 40,
+    hard_input_tokens: int = 20_000,
+):
+    request = intent.execution_request.model_copy(
+        update={
+            "budgets": ExecutionBudgets(
+                max_turns=max_turns,
+                max_tool_calls=max_tool_calls,
+                max_runtime_seconds=30,
+                soft_input_tokens=1_000,
+                hard_input_tokens=hard_input_tokens,
+            )
+        }
+    )
+    return intent.model_copy(update={"execution_request": request})
 
 
 def event_types(ledger: SQLitePersistenceLedger) -> list[RuntimeEventType]:
@@ -326,18 +354,7 @@ def test_budget_exceeded_fails_closed_before_launch(
 ) -> None:
     monkeypatch.chdir(ROOT)
     ledger, intent = make_intent(tmp_path)
-    request = intent.execution_request.model_copy(
-        update={
-            "budgets": ExecutionBudgets(
-                max_turns=1,
-                max_tool_calls=1,
-                max_runtime_seconds=30,
-                soft_input_tokens=1,
-                hard_input_tokens=1,
-            )
-        }
-    )
-    intent = intent.model_copy(update={"execution_request": request})
+    intent = with_budgets(intent, max_turns=1, max_tool_calls=1, hard_input_tokens=1)
     launcher = FakeLauncher(stdout_lines=(raw_event("turn.started"),))
 
     with pytest.raises(BudgetExceededError) as excinfo:
@@ -351,6 +368,94 @@ def test_budget_exceeded_fails_closed_before_launch(
     assert excinfo.value.retryable is False
     assert launcher.invocations == []
     assert ledger.list_run_events("run_001")[-1].payload.failure_code == FailureCode.BUDGET_EXCEEDED
+
+
+def test_observed_turn_budget_exceeded_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    intent = with_budgets(intent, max_turns=1)
+    launcher = FakeLauncher(
+        stdout_lines=(raw_event("turn.started"), raw_event("turn.started")),
+        final_payload=proposal_payload(),
+    )
+
+    with pytest.raises(BudgetExceededError) as excinfo:
+        CodexRuntimeCoordinator(
+            ledger,
+            make_config(tmp_path),
+            launcher=launcher,
+        ).execute(intent)
+
+    assert excinfo.value.failure_code == FailureCode.BUDGET_EXCEEDED
+    assert excinfo.value.retryable is False
+    assert event_types(ledger) == [
+        RuntimeEventType.RUN_STARTED,
+        RuntimeEventType.CODEX_EVENT,
+        RuntimeEventType.CODEX_EVENT,
+        RuntimeEventType.RUN_FAILED,
+    ]
+    failed_event = ledger.list_run_events("run_001")[-1]
+    assert "observed turn count exceeded" in failed_event.payload.detail
+
+
+def test_observed_tool_call_budget_exceeded_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    intent = with_budgets(intent, max_tool_calls=1)
+    launcher = FakeLauncher(
+        stdout_lines=(raw_event("tool.started"), raw_event("tool.started")),
+        final_payload=proposal_payload(),
+    )
+
+    with pytest.raises(BudgetExceededError) as excinfo:
+        CodexRuntimeCoordinator(
+            ledger,
+            make_config(tmp_path),
+            launcher=launcher,
+        ).execute(intent)
+
+    assert excinfo.value.failure_code == FailureCode.BUDGET_EXCEEDED
+    assert excinfo.value.retryable is False
+    assert event_types(ledger) == [
+        RuntimeEventType.RUN_STARTED,
+        RuntimeEventType.CODEX_EVENT,
+        RuntimeEventType.CODEX_EVENT,
+        RuntimeEventType.RUN_FAILED,
+    ]
+    failed_event = ledger.list_run_events("run_001")[-1]
+    assert "observed tool call count exceeded" in failed_event.payload.detail
+
+
+def test_proposal_execution_meta_budget_exceeded_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    intent = with_budgets(intent, max_tool_calls=1)
+    launcher = FakeLauncher(
+        stdout_lines=(raw_event("turn.started"),),
+        final_payload=proposal_payload_with_meta(tool_call_count=2),
+    )
+
+    with pytest.raises(BudgetExceededError) as excinfo:
+        CodexRuntimeCoordinator(
+            ledger,
+            make_config(tmp_path),
+            launcher=launcher,
+        ).execute(intent)
+
+    assert excinfo.value.failure_code == FailureCode.BUDGET_EXCEEDED
+    assert excinfo.value.retryable is False
+    failed_event = ledger.list_run_events("run_001")[-1]
+    assert failed_event.payload.failure_code == FailureCode.BUDGET_EXCEEDED
+    assert "proposal tool call count exceeded" in failed_event.payload.detail
 
 
 def test_wrong_workspace_root_invocation_rejected(
@@ -391,7 +496,8 @@ def test_replay_from_stored_artifact_matches_ledger(
         ),
     )
 
-    coordinator.execute(intent)
+    result = coordinator.execute(intent)
+    (result.artifacts_dir / "normalized_events.jsonl").unlink()
 
     replayed = coordinator.replay_events(run_id="run_001")
     ledgered = ledger.list_run_events("run_001")

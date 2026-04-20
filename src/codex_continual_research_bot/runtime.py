@@ -31,6 +31,17 @@ from codex_continual_research_bot.contracts import (
 from codex_continual_research_bot.persistence import SQLitePersistenceLedger
 
 
+TURN_START_EVENTS = frozenset({"turn.started", "turn_started"})
+TOOL_CALL_START_EVENTS = frozenset(
+    {
+        "tool.started",
+        "tool_started",
+        "tool_call.started",
+        "tool_call_started",
+    }
+)
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -386,6 +397,8 @@ class CodexRuntimeCoordinator:
 
         result = self._launcher.run(invocation)
         raw_event_count = 0
+        observed_turn_count = 0
+        observed_tool_call_count = 0
         for line in result.stdout_lines:
             if not line.strip():
                 continue
@@ -408,6 +421,19 @@ class CodexRuntimeCoordinator:
             self._append_event(attempt_dir=attempt_dir, event=event)
             seq += 1
             raw_event_count += 1
+            raw_event_type = event.payload.raw_event_type
+            if _is_turn_start_event(raw_event_type):
+                observed_turn_count += 1
+            if _is_tool_call_start_event(raw_event_type):
+                observed_tool_call_count += 1
+            self._enforce_observed_runtime_budgets(
+                budgets=intent.execution_request.budgets,
+                observed_turn_count=observed_turn_count,
+                observed_tool_call_count=observed_tool_call_count,
+                attempt_dir=attempt_dir,
+                run_id=intent.run_id,
+                seq=seq,
+            )
 
         if raw_event_count == 0:
             detail = "codex exec produced no JSONL events; refusing final-output-only result"
@@ -461,6 +487,13 @@ class CodexRuntimeCoordinator:
 
         proposal = self._load_proposal(
             path=invocation.final_message_path,
+            attempt_dir=attempt_dir,
+            run_id=intent.run_id,
+            seq=seq,
+        )
+        self._enforce_proposal_runtime_budgets(
+            proposal=proposal,
+            budgets=intent.execution_request.budgets,
             attempt_dir=attempt_dir,
             run_id=intent.run_id,
             seq=seq,
@@ -533,10 +566,7 @@ class CodexRuntimeCoordinator:
         )
 
     def replay_events(self, *, run_id: str, attempt: int | None = None) -> list[RuntimeEvent]:
-        return self._artifact_store.replay_events(
-            run_id=run_id,
-            attempt=attempt or self._config.attempt,
-        )
+        return self._ledger.list_run_events(run_id)
 
     def _prepare_invocation(
         self,
@@ -624,6 +654,92 @@ class CodexRuntimeCoordinator:
                 retryable=False,
             )
 
+    def _enforce_observed_runtime_budgets(
+        self,
+        *,
+        budgets: ExecutionBudgets,
+        observed_turn_count: int,
+        observed_tool_call_count: int,
+        attempt_dir: Path,
+        run_id: str,
+        seq: int,
+    ) -> None:
+        if observed_turn_count > budgets.max_turns:
+            detail = (
+                "observed turn count exceeded runtime budget: "
+                f"{observed_turn_count} > {budgets.max_turns}"
+            )
+            self._record_budget_failure(
+                attempt_dir=attempt_dir,
+                run_id=run_id,
+                seq=seq,
+                detail=detail,
+            )
+        if observed_tool_call_count > budgets.max_tool_calls:
+            detail = (
+                "observed tool call count exceeded runtime budget: "
+                f"{observed_tool_call_count} > {budgets.max_tool_calls}"
+            )
+            self._record_budget_failure(
+                attempt_dir=attempt_dir,
+                run_id=run_id,
+                seq=seq,
+                detail=detail,
+            )
+
+    def _enforce_proposal_runtime_budgets(
+        self,
+        *,
+        proposal: ProposalBundle,
+        budgets: ExecutionBudgets,
+        attempt_dir: Path,
+        run_id: str,
+        seq: int,
+    ) -> None:
+        if proposal.execution_meta.turn_count > budgets.max_turns:
+            detail = (
+                "proposal turn count exceeded runtime budget: "
+                f"{proposal.execution_meta.turn_count} > {budgets.max_turns}"
+            )
+            self._record_budget_failure(
+                attempt_dir=attempt_dir,
+                run_id=run_id,
+                seq=seq,
+                detail=detail,
+            )
+        if proposal.execution_meta.tool_call_count > budgets.max_tool_calls:
+            detail = (
+                "proposal tool call count exceeded runtime budget: "
+                f"{proposal.execution_meta.tool_call_count} > {budgets.max_tool_calls}"
+            )
+            self._record_budget_failure(
+                attempt_dir=attempt_dir,
+                run_id=run_id,
+                seq=seq,
+                detail=detail,
+            )
+
+    def _record_budget_failure(
+        self,
+        *,
+        attempt_dir: Path,
+        run_id: str,
+        seq: int,
+        detail: str,
+    ) -> None:
+        self._record_failure(
+            attempt_dir=attempt_dir,
+            run_id=run_id,
+            seq=seq,
+            failure_code=FailureCode.BUDGET_EXCEEDED,
+            detail=detail,
+        )
+        raise BudgetExceededError(
+            failure_code=FailureCode.BUDGET_EXCEEDED,
+            detail=detail,
+            retryable=False,
+        )
+
     def _load_proposal(
         self,
         *,
@@ -691,3 +807,11 @@ class CodexRuntimeCoordinator:
     def _append_event(self, *, attempt_dir: Path, event: RuntimeEvent) -> None:
         self._ledger.append_run_event(event)
         self._artifact_store.append_normalized_event(attempt_dir=attempt_dir, event=event)
+
+
+def _is_turn_start_event(raw_event_type: str) -> bool:
+    return raw_event_type.lower() in TURN_START_EVENTS
+
+
+def _is_tool_call_start_event(raw_event_type: str) -> bool:
+    return raw_event_type.lower() in TOOL_CALL_START_EVENTS

@@ -23,6 +23,10 @@ from codex_continual_research_bot.queue_worker import (
     RetryableQueueWorkerError,
     TerminalQueueWorkerError,
 )
+from codex_continual_research_bot.runtime import (
+    BudgetExceededError,
+    CodexProcessCrashError,
+)
 
 
 def make_topic_snapshot() -> TopicSnapshot:
@@ -190,6 +194,60 @@ def test_retryable_failure_requeues_with_backoff(tmp_path: Path) -> None:
     assert queue_row["state"] == QueueJobState.QUEUED.value
     assert queue_row["last_failure_code"] == FailureCode.RUNNER_HOST_UNAVAILABLE.value
     assert queue_row["available_at"] > now.isoformat()
+
+
+def test_retryable_runtime_failure_preserves_specific_failure_code(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    now = datetime(2026, 4, 19, tzinfo=timezone.utc)
+
+    def fail_runtime(_: RunIntent) -> None:
+        raise CodexProcessCrashError(
+            failure_code=FailureCode.CODEX_PROCESS_CRASH,
+            detail="codex exec exited with status 9",
+            retryable=True,
+        )
+
+    result = QueueWorker(ledger, worker_id="worker-a").execute_item(
+        queue_item_id="queue_001",
+        run_id="run_queue_001",
+        handler=fail_runtime,
+        now=now,
+    )
+
+    queue_row = ledger.fetch_queue_item("queue_001")
+    assert queue_row is not None
+    assert result.state == QueueJobState.QUEUED
+    assert result.action == "requeued"
+    assert result.failure_code == FailureCode.CODEX_PROCESS_CRASH
+    assert queue_row["last_failure_code"] == FailureCode.CODEX_PROCESS_CRASH.value
+    assert queue_row["last_failure_retryable"] == 1
+
+
+def test_terminal_runtime_failure_preserves_specific_failure_code(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+
+    def fail_runtime(_: RunIntent) -> None:
+        raise BudgetExceededError(
+            failure_code=FailureCode.BUDGET_EXCEEDED,
+            detail="observed tool call count exceeded runtime budget",
+            retryable=False,
+        )
+
+    result = QueueWorker(ledger, worker_id="worker-a").execute_item(
+        queue_item_id="queue_001",
+        run_id="run_queue_001",
+        handler=fail_runtime,
+    )
+
+    queue_row = ledger.fetch_queue_item("queue_001")
+    run_row = ledger.fetch_run("run_queue_001")
+    assert queue_row is not None
+    assert run_row is not None
+    assert result.state == QueueJobState.DEAD_LETTER
+    assert result.failure_code == FailureCode.BUDGET_EXCEEDED
+    assert queue_row["last_failure_code"] == FailureCode.BUDGET_EXCEEDED.value
+    assert queue_row["last_failure_human_review"] == 1
+    assert run_row["status"] == RunLifecycleState.DEAD_LETTER.value
 
 
 def test_retryable_failure_can_claim_existing_run_on_next_attempt(
