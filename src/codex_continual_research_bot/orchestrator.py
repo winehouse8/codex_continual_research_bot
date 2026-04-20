@@ -409,47 +409,52 @@ class RunOrchestrator:
     ) -> RunIntent:
         queue_row = self._require_queue_row(queue_item_id)
         payload = self._queue_payload(queue_row)
-        request = RunExecutionRequest(
-            run_id=run_id,
-            topic_id=snapshot.topic_id,
-            mode=mode,
-            objective=payload.objective,
-            plan=RunPlan(
-                must_attack_current_best=True,
-                must_generate_challenger=True,
-                must_collect_support_and_challenge=True,
-            ),
-            context_snapshot={
-                "topic_summary": snapshot.topic_summary,
-                "current_best_hypotheses": snapshot.current_best_hypotheses,
-                "challenger_targets": snapshot.challenger_targets,
-                "active_conflicts": snapshot.active_conflicts,
-                "open_questions": snapshot.open_questions,
-                "recent_provenance_digest": snapshot.recent_provenance_digest,
-                "selected_queue_items": frontier.selected_queue_items,
-                "queued_user_inputs": snapshot.queued_user_inputs,
-            },
-            tool_policy=self._tool_policy,
-            output_contract=self._output_contract,
-            budgets=self._budgets,
-            idempotency_key=queue_row["idempotency_key"],
-        )
         run = self._ledger.fetch_run(run_id)
         state = (
             RunLifecycleState.CODEX_EXECUTING
             if run is None
             else RunLifecycleState(run["status"])
         )
-        return RunIntent(
-            run_id=run_id,
-            topic_id=snapshot.topic_id,
-            queue_item_id=queue_item_id,
-            mode=mode,
-            snapshot_version=snapshot.snapshot_version,
-            lifecycle_state=state,
-            frontier=frontier,
-            execution_request=request,
-        )
+        try:
+            request = RunExecutionRequest(
+                run_id=run_id,
+                topic_id=snapshot.topic_id,
+                mode=mode,
+                objective=payload.objective,
+                plan=RunPlan(
+                    must_attack_current_best=True,
+                    must_generate_challenger=True,
+                    must_collect_support_and_challenge=True,
+                ),
+                context_snapshot={
+                    "topic_summary": snapshot.topic_summary,
+                    "current_best_hypotheses": snapshot.current_best_hypotheses,
+                    "challenger_targets": snapshot.challenger_targets,
+                    "active_conflicts": snapshot.active_conflicts,
+                    "open_questions": snapshot.open_questions,
+                    "recent_provenance_digest": snapshot.recent_provenance_digest,
+                    "selected_queue_items": frontier.selected_queue_items,
+                    "queued_user_inputs": snapshot.queued_user_inputs,
+                },
+                tool_policy=self._tool_policy,
+                output_contract=self._output_contract,
+                budgets=self._budgets,
+                idempotency_key=queue_row["idempotency_key"],
+            )
+            return RunIntent(
+                run_id=run_id,
+                topic_id=snapshot.topic_id,
+                queue_item_id=queue_item_id,
+                mode=mode,
+                snapshot_version=snapshot.snapshot_version,
+                lifecycle_state=state,
+                frontier=frontier,
+                execution_request=request,
+            )
+        except ValidationError as exc:
+            raise MalformedRunInputError(
+                f"run {run_id} cannot build a valid runtime intent"
+            ) from exc
 
     def validate_proposal_for_competition(
         self,
@@ -535,20 +540,50 @@ class RunOrchestrator:
         intent: RunIntent,
         proposal: ProposalBundle,
     ) -> None:
+        self._validate_intent_matches_persisted_run(intent)
         self.validate_proposal_for_competition(intent=intent, proposal=proposal)
         self._state_machine.transition(
             run_id=intent.run_id,
             to_state=RunLifecycleState.NORMALIZING,
         )
 
+    def _validate_intent_matches_persisted_run(self, intent: RunIntent) -> None:
+        run = self._ledger.fetch_run(intent.run_id)
+        if run is None:
+            raise KeyError(f"run {intent.run_id} does not exist")
+        if run["topic_id"] != intent.topic_id:
+            raise InvalidRunTransitionError(
+                f"run {intent.run_id} topic changed "
+                f"from {intent.topic_id} to {run['topic_id']}"
+            )
+        if run["queue_item_id"] != intent.queue_item_id:
+            raise InvalidRunTransitionError(
+                f"run {intent.run_id} queue item changed "
+                f"from {intent.queue_item_id} to {run['queue_item_id']}"
+            )
+        if run["idempotency_key"] != intent.execution_request.idempotency_key:
+            raise InvalidRunTransitionError(
+                f"run {intent.run_id} idempotency key no longer matches intent"
+            )
+        if run["snapshot_version"] != intent.snapshot_version:
+            raise StaleTopicSnapshotError(
+                "snapshot version mismatch: "
+                f"run uses {run['snapshot_version']}, intent uses {intent.snapshot_version}"
+            )
+
     def _queue_selection_from_row(self, queue_item_id: str) -> QueueSelection:
         row = self._require_queue_row(queue_item_id)
         payload = self._queue_payload(row)
-        return QueueSelection(
-            queue_item_id=row["id"],
-            kind=row["kind"],
-            summary=payload.objective,
-        )
+        try:
+            return QueueSelection(
+                queue_item_id=row["id"],
+                kind=row["kind"],
+                summary=payload.objective,
+            )
+        except ValidationError as exc:
+            raise MalformedRunInputError(
+                f"queue item {row['id']} has malformed queue row fields"
+            ) from exc
 
     def _queue_payload(self, row: dict[str, Any]) -> QueuePayload:
         try:

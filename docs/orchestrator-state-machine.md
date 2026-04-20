@@ -43,6 +43,9 @@ stateDiagram-v2
 
 `topic_snapshots` stores strict `TopicSnapshot` payloads by
 `(topic_id, snapshot_version)`. The orchestrator reads only the latest snapshot.
+The persisted row key must match the payload's `topic_id` and
+`snapshot_version`; mismatches are treated as malformed backend state rather
+than silently trusting the JSON body.
 If a caller supplies `expected_snapshot_version` and the latest version differs,
 the run transitions to `failed` and no runtime request is returned. Snapshots
 must also contain at least one current-best hypothesis so the run has an
@@ -62,6 +65,8 @@ The run intent builder maps the claimed queue row into:
 
 Persisted queue payload JSON must validate against the canonical `QueuePayload`
 contract, and `selected_queue_item_ids` must include the claimed queue item.
+Persisted queue row fields used in the request, including `kind` and
+`idempotency_key`, must also validate before a runtime intent is returned.
 The builder fails closed instead of silently repairing or ignoring queue
 authority mismatches.
 
@@ -76,6 +81,8 @@ All generated requests set the Phase 3 competition requirements:
 Before later phases may normalize or persist runtime output,
 `accept_competition_proposal(...)` validates the runtime proposal and only then
 advances the run from `codex_executing` to `normalizing`. Its validation path
+first checks that the persisted run still matches the supplied intent's topic,
+queue item, idempotency key, and snapshot version, then
 requires:
 
 - support and challenge arguments for each current-best target

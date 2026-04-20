@@ -301,6 +301,25 @@ def test_schema_invalid_topic_snapshot_fail_closed(tmp_path: Path) -> None:
     assert run["status"] == RunLifecycleState.FAILED.value
 
 
+def test_topic_snapshot_payload_authority_mismatch_fail_closed(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path, with_snapshot=False)
+    snapshot_data = make_topic_snapshot().model_dump(mode="json")
+    snapshot_data["topic_id"] = "topic_999"
+    insert_raw_topic_snapshot(ledger, snapshot_json=json.dumps(snapshot_data))
+    orchestrator = RunOrchestrator(ledger)
+
+    with pytest.raises(MalformedTopicSnapshotError, match="payload authority"):
+        orchestrator.start_queued_run(
+            queue_item_id="queue_001",
+            run_id="run_001",
+            worker_id="worker-a",
+        )
+
+    run = ledger.fetch_run("run_001")
+    assert run is not None
+    assert run["status"] == RunLifecycleState.FAILED.value
+
+
 def test_empty_current_best_snapshot_fail_closed_before_runtime(tmp_path: Path) -> None:
     snapshot = make_topic_snapshot().model_copy(update={"current_best_hypotheses": []})
     ledger = make_ledger(tmp_path, snapshot=snapshot)
@@ -388,6 +407,28 @@ def test_queue_payload_selected_item_mismatch_fail_closed(
     orchestrator = RunOrchestrator(ledger)
 
     with pytest.raises(MalformedRunInputError, match="must include itself"):
+        orchestrator.start_queued_run(
+            queue_item_id="queue_001",
+            run_id="run_001",
+            worker_id="worker-a",
+        )
+
+    run = ledger.fetch_run("run_001")
+    assert run is not None
+    assert run["status"] == RunLifecycleState.FAILED.value
+    assert run["snapshot_version"] == 1
+
+
+def test_invalid_queue_kind_fail_closed_after_snapshot_pin(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    with ledger.connect() as connection, connection:
+        connection.execute(
+            "UPDATE queue_items SET kind = ? WHERE id = ?",
+            ("run.mystery", "queue_001"),
+        )
+    orchestrator = RunOrchestrator(ledger)
+
+    with pytest.raises(MalformedRunInputError, match="queue row fields"):
         orchestrator.start_queued_run(
             queue_item_id="queue_001",
             run_id="run_001",
@@ -795,3 +836,43 @@ def test_valid_competition_proposal_advances_to_normalizing(tmp_path: Path) -> N
     run = ledger.fetch_run("run_001")
     assert run is not None
     assert run["status"] == RunLifecycleState.NORMALIZING.value
+
+
+def test_stale_intent_cannot_advance_requeued_run_from_new_snapshot(
+    tmp_path: Path,
+) -> None:
+    ledger = make_ledger(tmp_path)
+    orchestrator = RunOrchestrator(ledger)
+    stale_intent = orchestrator.start_queued_run(
+        queue_item_id="queue_001",
+        run_id="run_001",
+        worker_id="worker-a",
+    )
+    RunStateMachine(ledger).transition(
+        run_id="run_001",
+        to_state=RunLifecycleState.FAILED,
+    )
+    RunStateMachine(ledger).transition(
+        run_id="run_001",
+        to_state=RunLifecycleState.QUEUED,
+    )
+    ledger.store_topic_snapshot(make_topic_snapshot(version=2))
+    fresh_intent = orchestrator.start_queued_run(
+        queue_item_id="queue_001",
+        run_id="run_001",
+        worker_id="worker-b",
+    )
+    proposal_data = proposal_data_with_current_best_challenge()
+    proposal_data["revision_proposals"][0]["action"] = "weaken"
+    proposal = ProposalBundle.model_validate(proposal_data)
+
+    with pytest.raises(StaleTopicSnapshotError, match="intent uses 1"):
+        orchestrator.accept_competition_proposal(
+            intent=stale_intent,
+            proposal=proposal,
+        )
+
+    run = ledger.fetch_run("run_001")
+    assert run is not None
+    assert run["status"] == RunLifecycleState.CODEX_EXECUTING.value
+    assert fresh_intent.snapshot_version == 2

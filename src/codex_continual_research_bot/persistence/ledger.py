@@ -232,7 +232,7 @@ class SQLitePersistenceLedger:
     ) -> TopicSnapshot | None:
         if snapshot_version is None:
             query = """
-                SELECT snapshot_json
+                SELECT topic_id, snapshot_version, snapshot_json
                 FROM topic_snapshots
                 WHERE topic_id = ?
                 ORDER BY snapshot_version DESC
@@ -241,7 +241,7 @@ class SQLitePersistenceLedger:
             params = (topic_id,)
         else:
             query = """
-                SELECT snapshot_json
+                SELECT topic_id, snapshot_version, snapshot_json
                 FROM topic_snapshots
                 WHERE topic_id = ? AND snapshot_version = ?
             """
@@ -253,11 +253,19 @@ class SQLitePersistenceLedger:
         if row is None:
             return None
         try:
-            return TopicSnapshot.model_validate(json.loads(row["snapshot_json"]))
+            snapshot = TopicSnapshot.model_validate(json.loads(row["snapshot_json"]))
         except (json.JSONDecodeError, TypeError, ValidationError) as exc:
             raise MalformedTopicSnapshotError(
                 f"topic {topic_id} has malformed snapshot payload"
             ) from exc
+        if (
+            snapshot.topic_id != row["topic_id"]
+            or snapshot.snapshot_version != row["snapshot_version"]
+        ):
+            raise MalformedTopicSnapshotError(
+                f"topic {topic_id} snapshot row does not match payload authority"
+            )
+        return snapshot
 
     def reserve_idempotency_key(
         self,
