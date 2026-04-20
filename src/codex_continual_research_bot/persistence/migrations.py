@@ -27,6 +27,10 @@ MIGRATIONS = [
         version="0004_phase9_interactive_run_path",
         filename="migrations/0004_phase9_interactive_run_path.sql",
     ),
+    Migration(
+        version="0005_phase11_operational_controls",
+        filename="migrations/0005_phase11_operational_controls.sql",
+    ),
 ]
 
 

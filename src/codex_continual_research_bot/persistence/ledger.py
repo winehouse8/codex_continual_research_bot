@@ -675,6 +675,148 @@ class SQLitePersistenceLedger:
         data["graph_json"] = json.loads(data["graph_json"])
         return data
 
+    def append_operation_audit_event(
+        self,
+        *,
+        scope: str,
+        subject_id: str,
+        event_type: str,
+        actor: str,
+        payload: dict[str, Any],
+        created_at: datetime | None = None,
+    ) -> int:
+        with self.connect() as connection, connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO operation_audit_events(
+                    scope,
+                    subject_id,
+                    event_type,
+                    actor,
+                    payload_json,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    scope,
+                    subject_id,
+                    event_type,
+                    actor,
+                    json.dumps(payload, sort_keys=True),
+                    _normalize_timestamp(created_at),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_operation_audit_events(
+        self,
+        *,
+        scope: str | None = None,
+        subject_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if scope is not None:
+            clauses.append("scope = ?")
+            params.append(scope)
+        if subject_id is not None:
+            clauses.append("subject_id = ?")
+            params.append(subject_id)
+        where = "" if not clauses else f"WHERE {' AND '.join(clauses)}"
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM operation_audit_events
+                {where}
+                ORDER BY created_at ASC, id ASC
+                """,
+                params,
+            ).fetchall()
+        events = [dict(row) for row in rows]
+        for event in events:
+            event["payload_json"] = json.loads(event["payload_json"])
+        return events
+
+    def record_operator_alert(
+        self,
+        *,
+        alert_id: str,
+        alert_type: str,
+        severity: str,
+        detail: str,
+        payload: dict[str, Any],
+        topic_id: str | None = None,
+        queue_item_id: str | None = None,
+        run_id: str | None = None,
+        session_id: str | None = None,
+        created_at: datetime | None = None,
+    ) -> bool:
+        with self.connect() as connection, connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO operator_alerts(
+                    id,
+                    alert_type,
+                    severity,
+                    topic_id,
+                    queue_item_id,
+                    run_id,
+                    session_id,
+                    detail,
+                    payload_json,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    alert_id,
+                    alert_type,
+                    severity,
+                    topic_id,
+                    queue_item_id,
+                    run_id,
+                    session_id,
+                    detail,
+                    json.dumps(payload, sort_keys=True),
+                    _normalize_timestamp(created_at),
+                ),
+            )
+            return cursor.rowcount > 0
+
+    def list_operator_alerts(
+        self,
+        *,
+        alert_type: str | None = None,
+        topic_id: str | None = None,
+        session_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if alert_type is not None:
+            clauses.append("alert_type = ?")
+            params.append(alert_type)
+        if topic_id is not None:
+            clauses.append("topic_id = ?")
+            params.append(topic_id)
+        if session_id is not None:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        where = "" if not clauses else f"WHERE {' AND '.join(clauses)}"
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM operator_alerts
+                {where}
+                ORDER BY created_at DESC, id ASC
+                """,
+                params,
+            ).fetchall()
+        alerts = [dict(row) for row in rows]
+        for alert in alerts:
+            alert["payload_json"] = json.loads(alert["payload_json"])
+        return alerts
+
     def _insert_interactive_run_report(
         self,
         *,
@@ -1239,6 +1381,106 @@ class SQLitePersistenceLedger:
                 params,
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def recover_dead_letter_queue_item(
+        self,
+        *,
+        queue_item_id: str,
+        actor: str,
+        reason: str,
+        available_at: datetime | None = None,
+    ) -> None:
+        current_time = _normalize_timestamp()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    """
+                    SELECT
+                        id,
+                        state,
+                        topic_id,
+                        requested_run_id,
+                        last_failure_code,
+                        last_failure_detail
+                    FROM queue_items
+                    WHERE id = ?
+                    """,
+                    (queue_item_id,),
+                ).fetchone()
+                if row is None:
+                    raise KeyError(f"queue item {queue_item_id} does not exist")
+                if row["state"] != QueueJobState.DEAD_LETTER.value:
+                    raise QueueMutationMismatchError(
+                        f"queue item {queue_item_id} is {row['state']}, not dead_letter"
+                    )
+                connection.execute(
+                    """
+                    UPDATE queue_items
+                    SET state = ?,
+                        claimed_by = NULL,
+                        claimed_at = NULL,
+                        available_at = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        QueueJobState.QUEUED.value,
+                        _normalize_timestamp(available_at),
+                        current_time,
+                        queue_item_id,
+                    ),
+                )
+                run = connection.execute(
+                    "SELECT id FROM runs WHERE queue_item_id = ?",
+                    (queue_item_id,),
+                ).fetchone()
+                if run is not None:
+                    connection.execute(
+                        """
+                        UPDATE runs
+                        SET status = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            RunLifecycleState.QUEUED.value,
+                            current_time,
+                            run["id"],
+                        ),
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO operation_audit_events(
+                        scope,
+                        subject_id,
+                        event_type,
+                        actor,
+                        payload_json,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "queue",
+                        queue_item_id,
+                        "dead_letter.recovered",
+                        actor,
+                        json.dumps(
+                            {
+                                "reason": reason,
+                                "previous_failure_code": row["last_failure_code"],
+                                "previous_failure_detail": row["last_failure_detail"],
+                                "run_id": None if run is None else run["id"],
+                                "topic_id": row["topic_id"],
+                            },
+                            sort_keys=True,
+                        ),
+                        current_time,
+                    ),
+                )
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
 
     def _validate_claim_for_mutation(
         self,
