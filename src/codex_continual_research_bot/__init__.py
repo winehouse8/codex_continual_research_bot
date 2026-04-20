@@ -1,6 +1,7 @@
 """Canonical contract models for Continual Research Bot."""
 
 from .contracts import (
+    derive_principal_fingerprint,
     FailureCode,
     FrontierSelectionInput,
     ProposalBundle,
@@ -11,6 +12,18 @@ from .contracts import (
     RuntimeEvent,
     SessionInspectResult,
     TopicSnapshot,
+)
+from .codex_app_server_inspector import (
+    AuthJsonInspection,
+    CodexAppServerClient,
+    CodexAppServerInspector,
+)
+from .credential_locator import (
+    CredentialLocatorError,
+    ResolvedCredentialLocator,
+    credential_locator_for_principal,
+    resolve_credential_locator,
+    validate_credential_binding,
 )
 from .graph_canonicalization import (
     CanonicalGraphService,
@@ -55,6 +68,9 @@ from .scheduler import (
     TopicScheduleCandidate,
     competition_pressure_score,
 )
+from .session_healthcheck_job import SessionHealthcheckJob, SessionHealthcheckResult
+from .session_lease_store import SessionLeaseConflictError, SessionLeaseStore
+from .session_manager import SessionManager, SessionManagerConfig, SessionPolicyError
 from .tools import (
     DeniedCallAuditLog,
     NormalizedToolResult,
@@ -70,11 +86,15 @@ __all__ = [
     "CanonicalGraphService",
     "CanonicalizationContext",
     "CompetitionValidationError",
+    "AuthJsonInspection",
     "BudgetExceededError",
+    "CodexAppServerClient",
+    "CodexAppServerInspector",
     "CodexProcessCrashError",
     "CodexRuntimeConfig",
     "CodexRuntimeCoordinator",
     "CodexTransportTimeoutError",
+    "CredentialLocatorError",
     "ExecutionPolicyError",
     "FailureCode",
     "FrontierSelectionInput",
@@ -90,6 +110,7 @@ __all__ = [
     "QueueWorker",
     "QueueJob",
     "QueueMutationMismatchError",
+    "ResolvedCredentialLocator",
     "RetryableQueueWorkerError",
     "RunExecutionRequest",
     "RunIntent",
@@ -101,7 +122,14 @@ __all__ = [
     "STATE_TRANSITIONS",
     "SchedulerPolicyEvaluator",
     "SchedulerSelection",
+    "SessionHealthcheckJob",
+    "SessionHealthcheckResult",
     "SessionInspectResult",
+    "SessionLeaseConflictError",
+    "SessionLeaseStore",
+    "SessionManager",
+    "SessionManagerConfig",
+    "SessionPolicyError",
     "StaleTopicSnapshotError",
     "TerminalQueueWorkerError",
     "NormalizedToolResult",
@@ -117,5 +145,9 @@ __all__ = [
     "build_default_tool_registry",
     "canonical_mapping_spec",
     "competition_pressure_score",
+    "credential_locator_for_principal",
+    "derive_principal_fingerprint",
     "neo4j_constraints",
+    "resolve_credential_locator",
+    "validate_credential_binding",
 ]

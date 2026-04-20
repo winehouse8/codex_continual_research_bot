@@ -62,6 +62,7 @@ def test_happy_path_migration_creates_phase1_tables(tmp_path: Path) -> None:
     assert applied == [
         "0001_phase1_relational_ledger",
         "0002_phase3_topic_snapshot_orchestrator",
+        "0003_phase8_session_auth_boundaries",
     ]
     with ledger.connect() as connection:
         tables = {
@@ -80,6 +81,7 @@ def test_happy_path_migration_creates_phase1_tables(tmp_path: Path) -> None:
         "session_ledger",
         "session_leases",
         "session_events",
+        "session_host_bindings",
         "scheduler_policies",
         "topic_snapshots",
     } <= tables
@@ -94,6 +96,7 @@ def test_migration_rerun_is_idempotent(tmp_path: Path) -> None:
     assert first == [
         "0001_phase1_relational_ledger",
         "0002_phase3_topic_snapshot_orchestrator",
+        "0003_phase8_session_auth_boundaries",
     ]
     assert second == []
 
