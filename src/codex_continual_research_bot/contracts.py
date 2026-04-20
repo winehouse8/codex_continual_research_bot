@@ -85,6 +85,24 @@ class RuntimeEventType(str, Enum):
     RUN_FAILED = "run.failed"
 
 
+class RunLifecycleState(str, Enum):
+    QUEUED = "queued"
+    LOADING_STATE = "loading_state"
+    SELECTING_FRONTIER = "selecting_frontier"
+    PLANNING = "planning"
+    ATTACKING_CURRENT_BEST = "attacking_current_best"
+    GENERATING_CHALLENGERS = "generating_challengers"
+    CODEX_EXECUTING = "codex_executing"
+    NORMALIZING = "normalizing"
+    ADJUDICATING = "adjudicating"
+    RETIRING_WEAK_HYPOTHESES = "retiring_weak_hypotheses"
+    PERSISTING = "persisting"
+    SUMMARIZING = "summarizing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    DEAD_LETTER = "dead_letter"
+
+
 class SessionState(str, Enum):
     BOOTSTRAPPING = "bootstrapping"
     ACTIVE = "active"
@@ -183,6 +201,18 @@ class ContextSnapshot(StrictModel):
     queued_user_inputs: list[QueuedUserInput]
 
 
+class TopicSnapshot(StrictModel):
+    topic_id: StrictStr = Field(min_length=1)
+    snapshot_version: StrictInt = Field(ge=1)
+    topic_summary: StrictStr = Field(min_length=1)
+    current_best_hypotheses: list[HypothesisRef]
+    challenger_targets: list[HypothesisRef]
+    active_conflicts: list[ConflictRef]
+    open_questions: list[StrictStr]
+    recent_provenance_digest: StrictStr = Field(min_length=1)
+    queued_user_inputs: list[QueuedUserInput]
+
+
 class ToolPolicy(StrictModel):
     allowed_tools: list[StrictStr]
     network_mode: NetworkMode
@@ -213,6 +243,31 @@ class RunExecutionRequest(StrictModel):
     output_contract: OutputContract
     budgets: ExecutionBudgets
     idempotency_key: StrictStr = Field(min_length=1)
+
+
+class FrontierSelectionInput(StrictModel):
+    topic_id: StrictStr = Field(min_length=1)
+    snapshot_version: StrictInt = Field(ge=1)
+    current_best_hypotheses: list[HypothesisRef]
+    challenger_targets: list[HypothesisRef]
+    active_conflicts: list[ConflictRef]
+    open_questions: list[StrictStr]
+    selected_queue_items: list[QueueSelection]
+    queued_user_inputs: list[QueuedUserInput]
+    requires_current_best_attack: StrictBool
+    requires_challenger_generation: StrictBool
+    requires_reconciliation_or_retirement: StrictBool
+
+
+class RunIntent(StrictModel):
+    run_id: StrictStr = Field(min_length=1)
+    topic_id: StrictStr = Field(min_length=1)
+    queue_item_id: StrictStr | None = None
+    mode: RunMode
+    snapshot_version: StrictInt = Field(ge=1)
+    lifecycle_state: RunLifecycleState
+    frontier: FrontierSelectionInput
+    execution_request: RunExecutionRequest
 
 
 class EvidenceCandidate(StrictModel):

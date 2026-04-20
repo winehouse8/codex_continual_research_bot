@@ -15,6 +15,10 @@ class Migration:
 
 MIGRATIONS = [
     Migration(version="0001_phase1_relational_ledger", filename="migrations/0001_phase1_relational_ledger.sql"),
+    Migration(
+        version="0002_phase3_topic_snapshot_orchestrator",
+        filename="migrations/0002_phase3_topic_snapshot_orchestrator.sql",
+    ),
 ]
 
 

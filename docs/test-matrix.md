@@ -43,3 +43,18 @@ This matrix defines the minimum validation evidence for the graph canonicalizati
 | `test_missing_current_best_snapshot_quarantines_challenger_linkage` | Challenger anchor snapshot integrity | Challenger edge points at a current-best node absent from the backend snapshot |
 | `test_neo4j_schema_constraints_cover_phase2_labels` | Neo4j constraint contract | Schema drift between code and future graph migration |
 | `test_mapping_spec_covers_world_epistemic_and_provenance_layers` | Canonical mapping spec | Node and edge mapping stops matching the layer model |
+
+# Phase 3 Test Matrix
+
+This matrix defines the minimum validation evidence for the topic snapshot read model and orchestrator state machine added in `DEE-25`.
+
+| Test | Coverage | Failure guarded |
+| --- | --- | --- |
+| `test_happy_path_state_transition_builds_runtime_intent` | persisted run lifecycle through `codex_executing`; generated `RunExecutionRequest` competition plan | Runtime starts before backend fixes the competition loop requirements |
+| `test_invalid_transition_rejected` | executable state transition map | Ad hoc state jumps bypass the documented lifecycle |
+| `test_missing_topic_snapshot_fail_closed` | topic snapshot loader | Runtime starts from missing backend context |
+| `test_duplicate_run_start_is_idempotent` | queue item claim and run intent rebuild | Duplicate worker delivery creates a second run or divergent request |
+| `test_run_resume_from_persisted_state` | persisted run state and snapshot reload | Resume depends on in-memory orchestrator state |
+| `test_queue_item_to_run_intent_mapping` | queue row to `FrontierSelectionInput` / `RunExecutionRequest` mapping | Queue objective or idempotency key is dropped from runtime intent |
+| `test_stale_snapshot_version_mismatch_rejected` | snapshot version gate | Runtime persists decisions based on stale topic context |
+| `test_current_best_attack_omitted_proposal_rejected` | minimum proposal competition gate | Support-only research output proceeds without attacking current best |

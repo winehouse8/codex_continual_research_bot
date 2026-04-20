@@ -9,7 +9,13 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
-from codex_continual_research_bot.contracts import QueueJob, QueueJobState, RuntimeEvent
+from codex_continual_research_bot.contracts import (
+    QueueJob,
+    QueueJobState,
+    RunLifecycleState,
+    RuntimeEvent,
+    TopicSnapshot,
+)
 
 from .migrations import apply_migrations
 
@@ -31,6 +37,10 @@ class DuplicateIdempotencyKeyError(RuntimeError):
 
 class DuplicateRunEventError(RuntimeError):
     """Raised when a run event sequence is reused."""
+
+
+class DuplicateRunStartError(RuntimeError):
+    """Raised when a queue item is already linked to a different run."""
 
 
 @dataclass(frozen=True)
@@ -179,6 +189,61 @@ class SQLitePersistenceLedger:
                 ),
             )
 
+    def store_topic_snapshot(
+        self,
+        snapshot: TopicSnapshot,
+        *,
+        created_at: datetime | None = None,
+    ) -> None:
+        snapshot_json = json.dumps(snapshot.model_dump(mode="json"), sort_keys=True)
+        with self.connect() as connection, connection:
+            connection.execute(
+                """
+                INSERT INTO topic_snapshots(
+                    topic_id,
+                    snapshot_version,
+                    snapshot_json,
+                    created_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    snapshot.topic_id,
+                    snapshot.snapshot_version,
+                    snapshot_json,
+                    _normalize_timestamp(created_at),
+                ),
+            )
+
+    def fetch_topic_snapshot(
+        self,
+        *,
+        topic_id: str,
+        snapshot_version: int | None = None,
+    ) -> TopicSnapshot | None:
+        if snapshot_version is None:
+            query = """
+                SELECT snapshot_json
+                FROM topic_snapshots
+                WHERE topic_id = ?
+                ORDER BY snapshot_version DESC
+                LIMIT 1
+            """
+            params = (topic_id,)
+        else:
+            query = """
+                SELECT snapshot_json
+                FROM topic_snapshots
+                WHERE topic_id = ? AND snapshot_version = ?
+            """
+            params = (topic_id, snapshot_version)
+
+        with self.connect() as connection:
+            row = connection.execute(query, params).fetchone()
+
+        if row is None:
+            return None
+        return TopicSnapshot.model_validate(json.loads(row["snapshot_json"]))
+
     def reserve_idempotency_key(
         self,
         *,
@@ -222,9 +287,10 @@ class SQLitePersistenceLedger:
             ).fetchone()
         return None if row is None else dict(row)
 
-    def claim_next_queue_item_for_run(
+    def claim_queue_item_for_run(
         self,
         *,
+        queue_item_id: str,
         worker_id: str,
         run_id: str,
         mode: str,
@@ -238,15 +304,38 @@ class SQLitePersistenceLedger:
                     """
                     SELECT id, topic_id, dedupe_key, idempotency_key, attempts
                     FROM queue_items
-                    WHERE state = ? AND available_at <= ?
-                    ORDER BY priority DESC, available_at ASC, created_at ASC
+                    WHERE id = ? AND available_at <= ?
                     LIMIT 1
                     """,
-                    (QueueJobState.QUEUED.value, now_value),
+                    (queue_item_id, now_value),
                 ).fetchone()
                 if row is None:
                     connection.execute("ROLLBACK")
                     return None
+
+                existing_run = connection.execute(
+                    """
+                    SELECT id
+                    FROM runs
+                    WHERE queue_item_id = ?
+                    """,
+                    (row["id"],),
+                ).fetchone()
+                if existing_run is not None:
+                    if existing_run["id"] != run_id:
+                        raise DuplicateRunStartError(
+                            f"{row['id']} is already linked to {existing_run['id']}"
+                        )
+                    connection.execute("COMMIT")
+                    return ClaimedQueueItem(
+                        queue_item_id=row["id"],
+                        run_id=run_id,
+                        topic_id=row["topic_id"],
+                        dedupe_key=row["dedupe_key"],
+                        idempotency_key=row["idempotency_key"],
+                        attempts=row["attempts"],
+                        worker_id=worker_id,
+                    )
 
                 cursor = connection.execute(
                     """
@@ -286,7 +375,7 @@ class SQLitePersistenceLedger:
                         row["id"],
                         row["idempotency_key"],
                         mode,
-                        "claimed",
+                        RunLifecycleState.QUEUED.value,
                         now_value,
                         now_value,
                     ),
@@ -321,6 +410,40 @@ class SQLitePersistenceLedger:
             worker_id=worker_id,
         )
 
+    def claim_next_queue_item_for_run(
+        self,
+        *,
+        worker_id: str,
+        run_id: str,
+        mode: str,
+        now: datetime | None = None,
+    ) -> ClaimedQueueItem | None:
+        now_value = _normalize_timestamp(now)
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id
+                FROM queue_items
+                WHERE state = ? AND available_at <= ?
+                ORDER BY priority DESC, available_at ASC, created_at ASC
+                LIMIT 1
+                """,
+                (QueueJobState.QUEUED.value, now_value),
+            ).fetchone()
+
+        if row is None:
+            return None
+        try:
+            return self.claim_queue_item_for_run(
+                queue_item_id=row["id"],
+                worker_id=worker_id,
+                run_id=run_id,
+                mode=mode,
+                now=now,
+            )
+        except DuplicateRunStartError:
+            return None
+
     def append_run_event(self, event: RuntimeEvent) -> None:
         payload_json = json.dumps(event.payload.model_dump(mode="json"), sort_keys=True)
         try:
@@ -347,6 +470,32 @@ class SQLitePersistenceLedger:
                 )
         except sqlite3.IntegrityError as exc:
             raise DuplicateRunEventError(f"{event.run_id}:{event.seq}") from exc
+
+    def transition_run_state(
+        self,
+        *,
+        run_id: str,
+        state: RunLifecycleState,
+        snapshot_version: int | None = None,
+    ) -> None:
+        assignments = ["status = ?", "updated_at = ?"]
+        params: list[Any] = [state.value, _normalize_timestamp()]
+        if snapshot_version is not None:
+            assignments.append("snapshot_version = ?")
+            params.append(snapshot_version)
+        params.append(run_id)
+
+        with self.connect() as connection, connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE runs
+                SET {", ".join(assignments)}
+                WHERE id = ?
+                """,
+                params,
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(f"run {run_id} does not exist")
 
     def create_session_record(
         self,
@@ -488,5 +637,13 @@ class SQLitePersistenceLedger:
             row = connection.execute(
                 "SELECT * FROM runs WHERE id = ?",
                 (run_id,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def fetch_run_by_queue_item(self, queue_item_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM runs WHERE queue_item_id = ?",
+                (queue_item_id,),
             ).fetchone()
         return None if row is None else dict(row)
