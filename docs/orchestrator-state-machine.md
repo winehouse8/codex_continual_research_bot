@@ -86,6 +86,7 @@ queue item, idempotency key, and snapshot version, then
 requires:
 
 - support and challenge arguments for each current-best target
+- competition arguments must reference declared claims
 - a challenge argument targeting each current-best target
 - at least one challenger hypothesis
 - either active-conflict reconciliation/escalation or weaken/retire/supersede

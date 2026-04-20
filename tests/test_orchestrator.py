@@ -759,6 +759,26 @@ def test_support_argument_omitted_proposal_rejected(tmp_path: Path) -> None:
         )
 
 
+def test_competition_argument_with_unknown_claim_rejected(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    orchestrator = RunOrchestrator(ledger)
+    intent = orchestrator.start_queued_run(
+        queue_item_id="queue_001",
+        run_id="run_001",
+        worker_id="worker-a",
+    )
+    proposal_data = proposal_data_with_current_best_challenge()
+    proposal_data["arguments"][0]["claim_ids"] = ["claim_missing"]
+    proposal_data["revision_proposals"][0]["action"] = "weaken"
+    proposal = ProposalBundle.model_validate(proposal_data)
+
+    with pytest.raises(CompetitionValidationError, match="declared claims"):
+        orchestrator.validate_proposal_for_competition(
+            intent=intent,
+            proposal=proposal,
+        )
+
+
 def test_reconciliation_or_retirement_pressure_omitted_proposal_rejected(
     tmp_path: Path,
 ) -> None:
