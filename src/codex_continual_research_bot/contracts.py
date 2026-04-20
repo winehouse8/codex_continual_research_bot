@@ -165,6 +165,8 @@ class FailureCode(str, Enum):
     EXECUTION_POLICY_REJECTED = "execution_policy_rejected"
     QUEUE_MUTATION_MISMATCH = "queue_mutation_mismatch"
     DUPLICATE_QUEUE_DELIVERY = "duplicate_queue_delivery"
+    INVALID_USER_INPUT = "invalid_user_input"
+    DUPLICATE_TRIGGER_MISMATCH = "duplicate_trigger_mismatch"
 
 
 class RunPlan(StrictModel):
@@ -429,6 +431,77 @@ class RuntimeEvent(StrictModel):
                 f"payload for {self.event_type.value} must be {expected_type.__name__}"
             )
         return self
+
+
+class UserInputKind(str, Enum):
+    IDEA = "idea"
+    COUNTERARGUMENT = "counterargument"
+    SOURCE_REQUEST = "source_request"
+    QUESTION = "question"
+
+
+class InteractiveRunStatus(str, Enum):
+    COMPLETED = "completed"
+    FAILED = "failed"
+    QUARANTINED = "quarantined"
+    IN_PROGRESS = "in_progress"
+
+
+class InteractiveRunTriggerRequest(StrictModel):
+    topic_id: StrictStr = Field(min_length=1)
+    trigger_id: StrictStr = Field(min_length=1)
+    user_input: StrictStr = Field(min_length=1)
+    expected_snapshot_version: StrictInt = Field(ge=1)
+    workspace_root: StrictStr = Field(min_length=1)
+
+
+class TopicReadModel(StrictModel):
+    topic_id: StrictStr = Field(min_length=1)
+    snapshot_version: StrictInt = Field(ge=1)
+    topic_summary: StrictStr = Field(min_length=1)
+    current_best_hypotheses: list[HypothesisRef]
+    challenger_targets: list[HypothesisRef]
+    active_conflicts: list[ConflictRef]
+    open_questions: list[StrictStr]
+    queued_user_inputs: list[QueuedUserInput]
+
+
+class OperatorFailureSummary(StrictModel):
+    failure_code: FailureCode
+    retryable: StrictBool
+    human_review_required: StrictBool
+    detail: StrictStr = Field(min_length=1)
+    quarantine_reasons: list[StrictStr] = Field(default_factory=list)
+
+
+class BackendStateUpdateSummary(StrictModel):
+    graph_digest: StrictStr = Field(min_length=1)
+    node_count: StrictInt = Field(ge=0)
+    edge_count: StrictInt = Field(ge=0)
+    review_flags: list[StrictStr] = Field(default_factory=list)
+
+
+class RunReportViewModel(StrictModel):
+    report_id: StrictStr = Field(min_length=1)
+    run_id: StrictStr = Field(min_length=1)
+    topic_id: StrictStr = Field(min_length=1)
+    trigger_id: StrictStr = Field(min_length=1)
+    idempotency_key: StrictStr = Field(min_length=1)
+    snapshot_version: StrictInt = Field(ge=1)
+    status: InteractiveRunStatus
+    user_input_kind: UserInputKind | None = None
+    summary: StrictStr = Field(min_length=1)
+    proposal_digest: StrictStr | None = None
+    backend_state_update: BackendStateUpdateSummary | None = None
+    operator_failure_summary: OperatorFailureSummary | None = None
+    created_at: datetime
+
+
+class InteractiveRunTriggerResponse(StrictModel):
+    topic: TopicReadModel
+    report: RunReportViewModel
+    duplicate: StrictBool = False
+    resumed: StrictBool = False
 
 
 class AccountSnapshot(StrictModel):

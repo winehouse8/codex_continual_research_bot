@@ -32,6 +32,13 @@ from .graph_canonicalization import (
     canonical_mapping_spec,
     neo4j_constraints,
 )
+from .interactive import (
+    DuplicateInteractiveTriggerError,
+    InteractiveRunError,
+    InteractiveRunService,
+    InteractiveWorkspaceMismatchError,
+    InvalidInteractiveUserInputError,
+)
 from .orchestrator import (
     CompetitionValidationError,
     InvalidTopicSnapshotError,
@@ -100,7 +107,12 @@ __all__ = [
     "FrontierSelectionInput",
     "DeniedCallAuditLog",
     "HypothesisSnapshot",
+    "DuplicateInteractiveTriggerError",
+    "InteractiveRunError",
+    "InteractiveRunService",
+    "InteractiveWorkspaceMismatchError",
     "InvalidTopicSnapshotError",
+    "InvalidInteractiveUserInputError",
     "InvalidRunTransitionError",
     "MalformedJSONLEventError",
     "MalformedRunInputError",

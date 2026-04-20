@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from codex_continual_research_bot.contracts import (
     QueueJob,
     QueueJobState,
+    RunReportViewModel,
     RunLifecycleState,
     RuntimeEvent,
     SessionInspectResult,
@@ -578,6 +579,135 @@ class SQLitePersistenceLedger:
             )
             for row in rows
         ]
+
+    def record_interactive_run_success(
+        self,
+        *,
+        report: RunReportViewModel,
+        proposal_id: str,
+        graph_payload: dict[str, Any],
+        graph_digest: str,
+        node_count: int,
+        edge_count: int,
+    ) -> None:
+        report_json = json.dumps(report.model_dump(mode="json"), sort_keys=True)
+        graph_json = json.dumps(graph_payload, sort_keys=True)
+        with self.connect() as connection, connection:
+            connection.execute(
+                """
+                INSERT INTO canonical_graph_writes(
+                    run_id,
+                    topic_id,
+                    proposal_id,
+                    graph_digest,
+                    node_count,
+                    edge_count,
+                    graph_json,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    report.run_id,
+                    report.topic_id,
+                    proposal_id,
+                    graph_digest,
+                    node_count,
+                    edge_count,
+                    graph_json,
+                    _normalize_timestamp(report.created_at),
+                ),
+            )
+            self._insert_interactive_run_report(
+                connection=connection,
+                report=report,
+                report_json=report_json,
+            )
+
+    def record_interactive_run_failure(self, report: RunReportViewModel) -> None:
+        report_json = json.dumps(report.model_dump(mode="json"), sort_keys=True)
+        with self.connect() as connection, connection:
+            self._insert_interactive_run_report(
+                connection=connection,
+                report=report,
+                report_json=report_json,
+            )
+
+    def fetch_interactive_run_report(
+        self,
+        *,
+        run_id: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> RunReportViewModel | None:
+        if (run_id is None) == (idempotency_key is None):
+            raise ValueError("provide exactly one of run_id or idempotency_key")
+        if run_id is not None:
+            where = "run_id = ?"
+            value = run_id
+        else:
+            where = "idempotency_key = ?"
+            value = idempotency_key
+        with self.connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT report_json
+                FROM interactive_run_reports
+                WHERE {where}
+                """,
+                (value,),
+            ).fetchone()
+        if row is None:
+            return None
+        return RunReportViewModel.model_validate(json.loads(row["report_json"]))
+
+    def fetch_canonical_graph_write(self, run_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM canonical_graph_writes
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        data["graph_json"] = json.loads(data["graph_json"])
+        return data
+
+    def _insert_interactive_run_report(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        report: RunReportViewModel,
+        report_json: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO interactive_run_reports(
+                report_id,
+                run_id,
+                topic_id,
+                trigger_id,
+                idempotency_key,
+                snapshot_version,
+                status,
+                report_json,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                report.report_id,
+                report.run_id,
+                report.topic_id,
+                report.trigger_id,
+                report.idempotency_key,
+                report.snapshot_version,
+                report.status.value,
+                report_json,
+                _normalize_timestamp(report.created_at),
+            ),
+        )
 
     def transition_run_state(
         self,
