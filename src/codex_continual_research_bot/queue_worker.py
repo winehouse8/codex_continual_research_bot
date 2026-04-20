@@ -102,6 +102,10 @@ RETRY_MATRIX: Final[dict[FailureCode, RetryPolicy]] = {
         retryable=False,
         human_review_required=True,
     ),
+    FailureCode.EXECUTION_POLICY_REJECTED: RetryPolicy(
+        retryable=False,
+        human_review_required=True,
+    ),
     FailureCode.QUEUE_MUTATION_MISMATCH: RetryPolicy(
         retryable=False,
         human_review_required=True,

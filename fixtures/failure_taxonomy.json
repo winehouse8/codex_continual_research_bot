@@ -98,6 +98,13 @@
     "description": "The runtime request exceeded a backend-owned budget before launch."
   },
   {
+    "code": "execution_policy_rejected",
+    "category": "runtime",
+    "retryable": false,
+    "human_review_required": true,
+    "description": "The requested Codex runtime policy could not be enforced by the backend-controlled launcher."
+  },
+  {
     "code": "queue_mutation_mismatch",
     "category": "queue",
     "retryable": false,

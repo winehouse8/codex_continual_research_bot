@@ -161,6 +161,7 @@ class FailureCode(str, Enum):
     CODEX_TRANSPORT_TIMEOUT = "codex_transport_timeout"
     CODEX_PROCESS_CRASH = "codex_process_crash"
     BUDGET_EXCEEDED = "budget_exceeded"
+    EXECUTION_POLICY_REJECTED = "execution_policy_rejected"
     QUEUE_MUTATION_MISMATCH = "queue_mutation_mismatch"
     DUPLICATE_QUEUE_DELIVERY = "duplicate_queue_delivery"
 

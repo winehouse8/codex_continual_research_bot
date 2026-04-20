@@ -3,14 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
+import sys
 
 import pytest
 
 from codex_continual_research_bot.contracts import (
     ExecutionBudgets,
     FailureCode,
+    NetworkMode,
     QueueJob,
     RuntimeEventType,
+    SandboxMode,
+    ToolPolicy,
     TopicSnapshot,
 )
 from codex_continual_research_bot.orchestrator import RunOrchestrator
@@ -23,8 +27,10 @@ from codex_continual_research_bot.runtime import (
     CodexRuntimeConfig,
     CodexRuntimeCoordinator,
     CodexTransportTimeoutError,
+    ExecutionPolicyError,
     MalformedJSONLEventError,
     WorkspaceRootMismatchError,
+    SubprocessCodexExecLauncher,
 )
 
 
@@ -40,15 +46,25 @@ class FakeLauncher:
     final_payload: str | None = None
     invocations: list[CodexExecInvocation] = field(default_factory=list)
 
-    def run(self, invocation: CodexExecInvocation) -> CodexExecProcessResult:
+    def run(
+        self,
+        invocation: CodexExecInvocation,
+        stdout_handler=None,
+    ) -> CodexExecProcessResult:
         self.invocations.append(invocation)
+        emitted_lines: list[str] = []
+        for line in self.stdout_lines:
+            if stdout_handler is None:
+                emitted_lines.append(line)
+            else:
+                stdout_handler(line)
         if self.final_payload is not None:
             invocation.final_message_path.write_text(
                 self.final_payload,
                 encoding="utf-8",
             )
         return CodexExecProcessResult(
-            stdout_lines=self.stdout_lines,
+            stdout_lines=tuple(emitted_lines),
             exit_code=self.exit_code,
             timed_out=self.timed_out,
             stderr=self.stderr,
@@ -186,8 +202,55 @@ def with_budgets(
     return intent.model_copy(update={"execution_request": request})
 
 
+def with_tool_policy(
+    intent,
+    *,
+    allowed_tools: list[str] | None = None,
+    network_mode: NetworkMode = NetworkMode.RESTRICTED,
+    sandbox_mode: SandboxMode = SandboxMode.WORKSPACE_WRITE,
+):
+    request = intent.execution_request.model_copy(
+        update={
+            "tool_policy": ToolPolicy(
+                allowed_tools=allowed_tools
+                or ["web.search", "web.fetch", "internal.graph_query"],
+                network_mode=network_mode,
+                sandbox_mode=sandbox_mode,
+            )
+        }
+    )
+    return intent.model_copy(update={"execution_request": request})
+
+
 def event_types(ledger: SQLitePersistenceLedger) -> list[RuntimeEventType]:
     return [event.event_type for event in ledger.list_run_events("run_001")]
+
+
+def test_subprocess_launcher_streams_stdout_lines_before_return(tmp_path: Path) -> None:
+    seen: list[str] = []
+    invocation = CodexExecInvocation(
+        command=(
+            sys.executable,
+            "-c",
+            (
+                "import time;"
+                "print('{\"type\":\"turn.started\"}', flush=True);"
+                "time.sleep(0.05);"
+                "print('{\"type\":\"turn.completed\"}', flush=True)"
+            ),
+        ),
+        cwd=ROOT,
+        timeout_seconds=5,
+        final_message_path=tmp_path / "final_message.json",
+        prompt="",
+    )
+
+    result = SubprocessCodexExecLauncher().run(invocation, stdout_handler=seen.append)
+
+    assert seen == ['{"type":"turn.started"}', '{"type":"turn.completed"}']
+    assert result.stdout_lines == ()
+    assert result.exit_code == 0
+    assert result.timed_out is False
 
 
 def test_happy_path_exec_ingestion_persists_events_and_artifacts(
@@ -513,6 +576,40 @@ def test_observed_tool_call_budget_exceeded_fails_closed(
     assert "observed tool call count exceeded" in failed_event.payload.detail
 
 
+def test_streaming_budget_failure_stops_before_later_events_and_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    intent = with_budgets(intent, max_tool_calls=1)
+    launcher = FakeLauncher(
+        stdout_lines=(
+            raw_event("tool.started", tool_call_id="call_001"),
+            raw_event("tool.started", tool_call_id="call_002"),
+            raw_event("tool.started", tool_call_id="call_003"),
+        ),
+        final_payload=proposal_payload(),
+    )
+
+    with pytest.raises(BudgetExceededError):
+        CodexRuntimeCoordinator(
+            ledger,
+            make_config(tmp_path),
+            launcher=launcher,
+        ).execute(intent)
+
+    assert event_types(ledger) == [
+        RuntimeEventType.RUN_STARTED,
+        RuntimeEventType.CODEX_EVENT,
+        RuntimeEventType.CODEX_EVENT,
+        RuntimeEventType.RUN_FAILED,
+    ]
+    attempt_dir = tmp_path / "artifacts" / "run_001" / "attempt_001"
+    assert not (attempt_dir / "final_message.json").exists()
+    assert not (attempt_dir / "proposal_bundle.json").exists()
+
+
 def test_proposal_execution_meta_budget_exceeded_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -560,6 +657,81 @@ def test_wrong_workspace_root_invocation_rejected(
     assert excinfo.value.retryable is False
     assert launcher.invocations == []
     assert ledger.list_run_events("run_001")[-1].payload.failure_code == FailureCode.WORKSPACE_MISMATCH
+
+
+def test_disabled_sandbox_policy_rejected_before_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    intent = with_tool_policy(intent, sandbox_mode=SandboxMode.DISABLED)
+    launcher = FakeLauncher(stdout_lines=(raw_event("turn.started"),))
+
+    with pytest.raises(ExecutionPolicyError) as excinfo:
+        CodexRuntimeCoordinator(
+            ledger,
+            make_config(tmp_path),
+            launcher=launcher,
+        ).execute(intent)
+
+    assert excinfo.value.failure_code == FailureCode.EXECUTION_POLICY_REJECTED
+    assert excinfo.value.retryable is False
+    assert launcher.invocations == []
+    assert (
+        ledger.list_run_events("run_001")[-1].payload.failure_code
+        == FailureCode.EXECUTION_POLICY_REJECTED
+    )
+
+
+def test_unsupported_network_policy_rejected_before_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    intent = with_tool_policy(intent, network_mode=NetworkMode.OPEN)
+    launcher = FakeLauncher(stdout_lines=(raw_event("turn.started"),))
+
+    with pytest.raises(ExecutionPolicyError) as excinfo:
+        CodexRuntimeCoordinator(
+            ledger,
+            make_config(tmp_path),
+            launcher=launcher,
+        ).execute(intent)
+
+    assert excinfo.value.failure_code == FailureCode.EXECUTION_POLICY_REJECTED
+    assert excinfo.value.retryable is False
+    assert launcher.invocations == []
+    assert (
+        ledger.list_run_events("run_001")[-1].payload.failure_code
+        == FailureCode.EXECUTION_POLICY_REJECTED
+    )
+
+
+def test_unsupported_tool_policy_rejected_before_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    intent = with_tool_policy(intent, allowed_tools=["web.search", "shell.exec"])
+    launcher = FakeLauncher(stdout_lines=(raw_event("turn.started"),))
+
+    with pytest.raises(ExecutionPolicyError) as excinfo:
+        CodexRuntimeCoordinator(
+            ledger,
+            make_config(tmp_path),
+            launcher=launcher,
+        ).execute(intent)
+
+    assert excinfo.value.failure_code == FailureCode.EXECUTION_POLICY_REJECTED
+    assert excinfo.value.retryable is False
+    assert launcher.invocations == []
+    assert (
+        ledger.list_run_events("run_001")[-1].payload.failure_code
+        == FailureCode.EXECUTION_POLICY_REJECTED
+    )
 
 
 def test_replay_from_stored_artifact_matches_ledger(

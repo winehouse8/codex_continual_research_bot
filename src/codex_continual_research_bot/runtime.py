@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
+import selectors
 import subprocess
+import time
 from typing import Protocol
 
 from pydantic import ValidationError
@@ -16,6 +19,7 @@ from codex_continual_research_bot.contracts import (
     CodexRawEventPayload,
     ExecutionBudgets,
     FailureCode,
+    NetworkMode,
     OutputValidatedPayload,
     ProposalBundle,
     RunCompletedPayload,
@@ -31,6 +35,7 @@ from codex_continual_research_bot.contracts import (
 from codex_continual_research_bot.persistence import SQLitePersistenceLedger
 
 
+SUPPORTED_ALLOWED_TOOLS = frozenset({"web.search", "web.fetch", "internal.graph_query"})
 TURN_START_EVENTS = frozenset({"turn.started", "turn_started"})
 TOOL_CALL_START_EVENTS = frozenset(
     {
@@ -76,6 +81,10 @@ class WorkspaceRootMismatchError(CodexRuntimeError):
 
 class BudgetExceededError(CodexRuntimeError):
     """Raised before launch when the request exceeds backend-owned budgets."""
+
+
+class ExecutionPolicyError(CodexRuntimeError):
+    """Raised when backend policy cannot be enforced by the runtime."""
 
 
 class MalformedJSONLEventError(CodexRuntimeError):
@@ -137,42 +146,104 @@ class RuntimeExecutionResult:
     artifacts_dir: Path
 
 
+StdoutHandler = Callable[[str], None]
+
+
 class CodexExecLauncher(Protocol):
-    def run(self, invocation: CodexExecInvocation) -> CodexExecProcessResult:
+    def run(
+        self,
+        invocation: CodexExecInvocation,
+        stdout_handler: StdoutHandler | None = None,
+    ) -> CodexExecProcessResult:
         """Run a prepared Codex exec invocation and return captured JSONL lines."""
 
 
 class SubprocessCodexExecLauncher:
     """Production launcher for `codex exec --json`."""
 
-    def run(self, invocation: CodexExecInvocation) -> CodexExecProcessResult:
-        try:
-            completed = subprocess.run(
-                invocation.command,
-                cwd=invocation.cwd,
-                capture_output=True,
-                check=False,
-                text=True,
-                timeout=invocation.timeout_seconds,
-            )
-        except subprocess.TimeoutExpired as exc:
-            stdout = exc.stdout or ""
-            stderr = exc.stderr or ""
-            if isinstance(stdout, bytes):
-                stdout = stdout.decode("utf-8", errors="replace")
-            if isinstance(stderr, bytes):
-                stderr = stderr.decode("utf-8", errors="replace")
-            return CodexExecProcessResult(
-                stdout_lines=tuple(stdout.splitlines()),
-                exit_code=-1,
-                timed_out=True,
-                stderr=stderr,
-            )
-        return CodexExecProcessResult(
-            stdout_lines=tuple(completed.stdout.splitlines()),
-            exit_code=completed.returncode,
-            stderr=completed.stderr,
+    def run(
+        self,
+        invocation: CodexExecInvocation,
+        stdout_handler: StdoutHandler | None = None,
+    ) -> CodexExecProcessResult:
+        stdout_lines: list[str] = []
+        deadline = time.monotonic() + invocation.timeout_seconds
+        timed_out = False
+        process = subprocess.Popen(
+            invocation.command,
+            cwd=invocation.cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
         )
+        selector = selectors.DefaultSelector()
+        try:
+            if process.stdout is None:
+                raise CodexProcessCrashError(
+                    failure_code=FailureCode.CODEX_PROCESS_CRASH,
+                    detail="codex exec stdout pipe was not available",
+                    retryable=True,
+                )
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 and process.poll() is None:
+                    timed_out = True
+                    process.kill()
+                    break
+
+                events = selector.select(timeout=max(0.0, min(0.1, remaining)))
+                if events:
+                    line = process.stdout.readline()
+                    if line:
+                        self._handle_stdout_line(
+                            line=line,
+                            stdout_lines=stdout_lines,
+                            stdout_handler=stdout_handler,
+                        )
+                        continue
+
+                if process.poll() is not None:
+                    for line in process.stdout:
+                        self._handle_stdout_line(
+                            line=line,
+                            stdout_lines=stdout_lines,
+                            stdout_handler=stdout_handler,
+                        )
+                    break
+        except Exception:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            raise
+        finally:
+            selector.close()
+
+        if timed_out:
+            process.wait()
+            exit_code = -1
+        else:
+            exit_code = process.wait()
+        stderr = "" if process.stderr is None else process.stderr.read()
+        return CodexExecProcessResult(
+            stdout_lines=() if stdout_handler is not None else tuple(stdout_lines),
+            exit_code=exit_code,
+            timed_out=timed_out,
+            stderr=stderr,
+        )
+
+    def _handle_stdout_line(
+        self,
+        *,
+        line: str,
+        stdout_lines: list[str],
+        stdout_handler: StdoutHandler | None,
+    ) -> None:
+        stripped = line.rstrip("\n")
+        stdout_lines.append(stripped)
+        if stdout_handler is not None:
+            stdout_handler(stripped)
 
 
 class RuntimePromptBuilder:
@@ -395,13 +466,14 @@ class CodexRuntimeCoordinator:
             )
             raise
 
-        result = self._launcher.run(invocation)
         raw_event_count = 0
         observed_turn_count = 0
         observed_tool_call_count = 0
-        for line in result.stdout_lines:
+
+        def handle_stdout_line(line: str) -> None:
+            nonlocal seq, raw_event_count, observed_turn_count, observed_tool_call_count
             if not line.strip():
-                continue
+                return
             try:
                 event = self._normalizer.normalize_line(
                     line=line,
@@ -434,6 +506,10 @@ class CodexRuntimeCoordinator:
                 run_id=intent.run_id,
                 seq=seq,
             )
+
+        result = self._launcher.run(invocation, stdout_handler=handle_stdout_line)
+        for line in result.stdout_lines:
+            handle_stdout_line(line)
 
         if result.timed_out:
             detail = (
@@ -596,12 +672,7 @@ class CodexRuntimeCoordinator:
                 ),
                 retryable=False,
             )
-        if request.tool_policy.sandbox_mode == SandboxMode.DISABLED:
-            raise WorkspaceRootMismatchError(
-                failure_code=FailureCode.WORKSPACE_MISMATCH,
-                detail="runtime policy rejected disabled sandbox mode",
-                retryable=False,
-            )
+        self._enforce_tool_policy(request)
         if not self._config.output_schema_path.exists():
             raise OutputSchemaValidationError(
                 failure_code=FailureCode.OUTPUT_SCHEMA_VALIDATION_FAILED,
@@ -632,6 +703,7 @@ class CodexRuntimeCoordinator:
             payload={
                 "command": list(command[:-1]) + ["<runtime prompt>"],
                 "cwd": str(workspace_root),
+                "tool_policy": request.tool_policy.model_dump(mode="json"),
                 "timeout_seconds": request.budgets.max_runtime_seconds,
             },
         )
@@ -642,6 +714,32 @@ class CodexRuntimeCoordinator:
             final_message_path=final_message_path,
             prompt=prompt,
         )
+
+    def _enforce_tool_policy(self, request: RunExecutionRequest) -> None:
+        policy = request.tool_policy
+        if policy.sandbox_mode == SandboxMode.DISABLED:
+            raise ExecutionPolicyError(
+                failure_code=FailureCode.EXECUTION_POLICY_REJECTED,
+                detail="runtime policy rejected disabled sandbox mode",
+                retryable=False,
+            )
+        if policy.network_mode != NetworkMode.RESTRICTED:
+            raise ExecutionPolicyError(
+                failure_code=FailureCode.EXECUTION_POLICY_REJECTED,
+                detail=(
+                    "unsupported network mode for codex exec runtime: "
+                    f"{policy.network_mode.value}"
+                ),
+                retryable=False,
+            )
+        allowed_tools = frozenset(policy.allowed_tools)
+        if allowed_tools != SUPPORTED_ALLOWED_TOOLS:
+            unsupported = ", ".join(sorted(allowed_tools ^ SUPPORTED_ALLOWED_TOOLS))
+            raise ExecutionPolicyError(
+                failure_code=FailureCode.EXECUTION_POLICY_REJECTED,
+                detail=f"unsupported runtime tool policy drift: {unsupported}",
+                retryable=False,
+            )
 
     def _enforce_budgets(
         self,
