@@ -466,7 +466,8 @@ class RunOrchestrator:
             for hypothesis in intent.frontier.challenger_targets
         }
         attack_target_ids = current_best_ids | challenger_target_ids
-        claim_ids = {claim.claim_id for claim in proposal.claims}
+        claims_by_id = {claim.claim_id: claim for claim in proposal.claims}
+        claim_ids = set(claims_by_id)
         unknown_claim_ids = {
             claim_id
             for argument in proposal.arguments
@@ -479,6 +480,22 @@ class RunOrchestrator:
             raise CompetitionValidationError(
                 "proposal competition arguments must reference declared claims: "
                 f"{unknown_claim_list}"
+            )
+
+        evidence_ids = {evidence.artifact_id for evidence in proposal.evidence_candidates}
+        unknown_artifact_ids = {
+            artifact_id
+            for argument in proposal.arguments
+            if argument.target_hypothesis_id in attack_target_ids
+            for claim_id in argument.claim_ids
+            for artifact_id in claims_by_id[claim_id].artifact_ids
+            if artifact_id not in evidence_ids
+        }
+        if unknown_artifact_ids:
+            unknown_artifact_list = ", ".join(sorted(unknown_artifact_ids))
+            raise CompetitionValidationError(
+                "proposal competition claims must reference declared evidence artifacts: "
+                f"{unknown_artifact_list}"
             )
 
         challenged_current_best_ids = {

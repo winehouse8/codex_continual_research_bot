@@ -76,6 +76,7 @@ This matrix defines the minimum validation evidence for the topic snapshot read 
 | `test_challenger_generation_omitted_proposal_rejected` | challenger generation gate | Runtime output proceeds without producing a competing hypothesis |
 | `test_support_argument_omitted_proposal_rejected` | support-plus-challenge evidence gate | Challenge-only output proceeds without support evidence for selected targets |
 | `test_competition_argument_with_unknown_claim_rejected` | support-plus-challenge evidence backing | Malformed argument references satisfy competition pressure without declared claims |
+| `test_competition_claim_with_unknown_artifact_rejected` | support-plus-challenge provenance backing | Claims with undeclared evidence artifacts satisfy competition pressure |
 | `test_reconciliation_or_retirement_pressure_omitted_proposal_rejected` | reconciliation / retirement pressure gate | Runtime output proceeds without conflict reconciliation, escalation, or hypothesis weakening / retirement pressure |
 | `test_unrelated_revision_pressure_rejected` | snapshot-relevant revision pressure | Unrelated hypothesis revision satisfies the retirement-pressure gate |
 | `test_complete_competition_proposal_is_accepted` | full proposal gate acceptance | Valid competition output is over-rejected by the Phase 3 gate |
