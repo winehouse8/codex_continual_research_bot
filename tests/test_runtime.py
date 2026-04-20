@@ -351,6 +351,58 @@ def test_timeout_without_events_records_transport_failure(
     assert failed_event.payload.failure_code == FailureCode.CODEX_TRANSPORT_TIMEOUT
 
 
+def test_retry_after_timeout_appends_new_attempt_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    first_config = make_config(tmp_path)
+    first = CodexRuntimeCoordinator(
+        ledger,
+        first_config,
+        launcher=FakeLauncher(
+            stdout_lines=(raw_event("turn.started"),),
+            timed_out=True,
+            exit_code=-1,
+        ),
+    )
+
+    with pytest.raises(CodexTransportTimeoutError):
+        first.execute(intent)
+
+    second_config = CodexRuntimeConfig(
+        workspace_root=first_config.workspace_root,
+        artifact_root=first_config.artifact_root,
+        output_schema_path=first_config.output_schema_path,
+        attempt=2,
+    )
+    second = CodexRuntimeCoordinator(
+        ledger,
+        second_config,
+        launcher=FakeLauncher(
+            stdout_lines=(raw_event("turn.started"),),
+            final_payload=proposal_payload(),
+        ),
+    )
+
+    result = second.execute(intent)
+
+    events = ledger.list_run_events("run_001")
+    assert [event.seq for event in events] == list(range(7))
+    assert [event.event_type for event in events] == [
+        RuntimeEventType.RUN_STARTED,
+        RuntimeEventType.CODEX_EVENT,
+        RuntimeEventType.RUN_FAILED,
+        RuntimeEventType.RUN_STARTED,
+        RuntimeEventType.CODEX_EVENT,
+        RuntimeEventType.OUTPUT_VALIDATED,
+        RuntimeEventType.RUN_COMPLETED,
+    ]
+    assert result.artifacts_dir.name == "attempt_002"
+    assert (result.artifacts_dir / "proposal_bundle.json").exists()
+
+
 def test_process_crash_retry_classification(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

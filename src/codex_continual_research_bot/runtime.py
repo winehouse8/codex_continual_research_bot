@@ -363,7 +363,7 @@ class CodexRuntimeCoordinator:
             run_id=intent.run_id,
             attempt=self._config.attempt,
         )
-        seq = 0
+        seq = self._next_event_seq(intent.run_id)
         self._append_event(
             attempt_dir=attempt_dir,
             event=RuntimeEvent(
@@ -567,6 +567,12 @@ class CodexRuntimeCoordinator:
 
     def replay_events(self, *, run_id: str, attempt: int | None = None) -> list[RuntimeEvent]:
         return self._ledger.list_run_events(run_id)
+
+    def _next_event_seq(self, run_id: str) -> int:
+        events = self._ledger.list_run_events(run_id)
+        if not events:
+            return 0
+        return max(event.seq for event in events) + 1
 
     def _prepare_invocation(
         self,
