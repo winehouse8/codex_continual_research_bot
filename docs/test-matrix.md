@@ -98,3 +98,4 @@ This matrix defines the minimum validation evidence for the output validator, re
 | `test_repair_budget_exhausted_quarantines_invalid_output` | repair budget handling | The runtime loops indefinitely or drops invalid output without quarantine |
 | `test_compaction_artifact_preserves_referential_integrity` | `context.compacted` payload and retained artifact references | Compaction breaks evidence reference integrity |
 | `test_tool_result_omitted_after_compaction_is_rejected` | compaction-aware semantic validation | Proposal uses tool/artifact output omitted from compacted context |
+| `test_latest_compaction_retention_replaces_older_retention` | multiple `context.compacted` events during one run | Later compaction drops an artifact but older retention keeps the proposal passable |

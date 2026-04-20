@@ -550,9 +550,7 @@ class CodexRuntimeCoordinator:
             seq += 1
             raw_event_count += 1
             if event.event_type == RuntimeEventType.CONTEXT_COMPACTED:
-                if retained_artifact_ids_after_compaction is None:
-                    retained_artifact_ids_after_compaction = set()
-                retained_artifact_ids_after_compaction.update(
+                retained_artifact_ids_after_compaction = set(
                     event.payload.retained_artifact_ids
                 )
             else:
