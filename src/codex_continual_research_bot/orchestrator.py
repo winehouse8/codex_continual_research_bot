@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any, Final
 
+from pydantic import ValidationError
+
 from codex_continual_research_bot.contracts import (
     ArgumentStance,
     ConflictStatus,
@@ -12,6 +14,7 @@ from codex_continual_research_bot.contracts import (
     FrontierSelectionInput,
     OutputContract,
     ProposalBundle,
+    QueuePayload,
     QueueSelection,
     RevisionAction,
     RunExecutionRequest,
@@ -410,7 +413,7 @@ class RunOrchestrator:
             run_id=run_id,
             topic_id=snapshot.topic_id,
             mode=mode,
-            objective=payload["objective"],
+            objective=payload.objective,
             plan=RunPlan(
                 must_attack_current_best=True,
                 must_generate_challenger=True,
@@ -544,22 +547,20 @@ class RunOrchestrator:
         return QueueSelection(
             queue_item_id=row["id"],
             kind=row["kind"],
-            summary=payload["objective"],
+            summary=payload.objective,
         )
 
-    def _queue_payload(self, row: dict[str, Any]) -> dict[str, Any]:
+    def _queue_payload(self, row: dict[str, Any]) -> QueuePayload:
         try:
-            payload = json.loads(row["payload_json"])
-        except (json.JSONDecodeError, TypeError) as exc:
+            payload = QueuePayload.model_validate(json.loads(row["payload_json"]))
+        except (json.JSONDecodeError, TypeError, ValidationError) as exc:
             raise MalformedRunInputError(
-                f"queue item {row['id']} has malformed payload JSON"
+                f"queue item {row['id']} has malformed QueuePayload"
             ) from exc
-        if not isinstance(payload, dict):
-            raise MalformedRunInputError(f"queue item {row['id']} payload must be an object")
-        objective = payload.get("objective")
-        if not isinstance(objective, str) or not objective:
+
+        if row["id"] not in payload.selected_queue_item_ids:
             raise MalformedRunInputError(
-                f"queue item {row['id']} payload must include a non-empty objective"
+                f"queue item {row['id']} payload selected_queue_item_ids must include itself"
             )
         return payload
 

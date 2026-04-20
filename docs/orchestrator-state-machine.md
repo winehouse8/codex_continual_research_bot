@@ -60,6 +60,11 @@ The run intent builder maps the claimed queue row into:
 - `RunExecutionRequest.objective`
 - `RunExecutionRequest.idempotency_key`
 
+Persisted queue payload JSON must validate against the canonical `QueuePayload`
+contract, and `selected_queue_item_ids` must include the claimed queue item.
+The builder fails closed instead of silently repairing or ignoring queue
+authority mismatches.
+
 All generated requests set the Phase 3 competition requirements:
 
 - `must_attack_current_best`

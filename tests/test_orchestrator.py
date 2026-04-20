@@ -327,7 +327,67 @@ def test_missing_queue_objective_fail_closed_after_snapshot_pin(tmp_path: Path) 
         )
     orchestrator = RunOrchestrator(ledger)
 
-    with pytest.raises(MalformedRunInputError, match="non-empty objective"):
+    with pytest.raises(MalformedRunInputError, match="malformed QueuePayload"):
+        orchestrator.start_queued_run(
+            queue_item_id="queue_001",
+            run_id="run_001",
+            worker_id="worker-a",
+        )
+
+    run = ledger.fetch_run("run_001")
+    assert run is not None
+    assert run["status"] == RunLifecycleState.FAILED.value
+    assert run["snapshot_version"] == 1
+
+
+def test_schema_invalid_queue_payload_fail_closed_after_snapshot_pin(
+    tmp_path: Path,
+) -> None:
+    ledger = make_ledger(tmp_path)
+    with ledger.connect() as connection, connection:
+        connection.execute(
+            "UPDATE queue_items SET payload_json = ? WHERE id = ?",
+            (
+                json.dumps({"objective": "Missing canonical QueuePayload fields."}),
+                "queue_001",
+            ),
+        )
+    orchestrator = RunOrchestrator(ledger)
+
+    with pytest.raises(MalformedRunInputError, match="malformed QueuePayload"):
+        orchestrator.start_queued_run(
+            queue_item_id="queue_001",
+            run_id="run_001",
+            worker_id="worker-a",
+        )
+
+    run = ledger.fetch_run("run_001")
+    assert run is not None
+    assert run["status"] == RunLifecycleState.FAILED.value
+    assert run["snapshot_version"] == 1
+
+
+def test_queue_payload_selected_item_mismatch_fail_closed(
+    tmp_path: Path,
+) -> None:
+    ledger = make_ledger(tmp_path)
+    with ledger.connect() as connection, connection:
+        connection.execute(
+            "UPDATE queue_items SET payload_json = ? WHERE id = ?",
+            (
+                json.dumps(
+                    {
+                        "initiator": "scheduler",
+                        "objective": "Try to run a different queue item silently.",
+                        "selected_queue_item_ids": ["queue_999"],
+                    }
+                ),
+                "queue_001",
+            ),
+        )
+    orchestrator = RunOrchestrator(ledger)
+
+    with pytest.raises(MalformedRunInputError, match="must include itself"):
         orchestrator.start_queued_run(
             queue_item_id="queue_001",
             run_id="run_001",

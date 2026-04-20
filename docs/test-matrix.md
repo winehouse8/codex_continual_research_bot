@@ -58,6 +58,8 @@ This matrix defines the minimum validation evidence for the topic snapshot read 
 | `test_schema_invalid_topic_snapshot_fail_closed` | snapshot contract validation | Schema-invalid snapshot payload reaches runtime execution |
 | `test_empty_current_best_snapshot_fail_closed_before_runtime` | current-best availability in topic snapshots | Runtime starts with no attackable current-best hypothesis |
 | `test_missing_queue_objective_fail_closed_after_snapshot_pin` | queue payload validation during intent building | Malformed queue payload strands a run after snapshot pinning |
+| `test_schema_invalid_queue_payload_fail_closed_after_snapshot_pin` | canonical `QueuePayload` validation during intent building | Ad-hoc queue JSON bypasses the Phase 0 queue contract |
+| `test_queue_payload_selected_item_mismatch_fail_closed` | selected queue item authority | Queue payload points at a different item than the claimed run |
 | `test_duplicate_run_start_is_idempotent` | queue item claim and run intent rebuild | Duplicate worker delivery creates a second run or divergent request |
 | `test_duplicate_run_start_with_different_run_id_is_rejected` | queue item to run id authority | Duplicate delivery with a new run id creates a divergent run |
 | `test_duplicate_start_in_loading_state_cannot_resume_without_snapshot_pin` | duplicate delivery during pre-runtime lifecycle states | Duplicate delivery builds an intent from an unpinned or drifted snapshot |
