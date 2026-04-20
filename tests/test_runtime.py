@@ -543,6 +543,33 @@ def test_tool_result_omitted_after_compaction_is_rejected(
     assert payload["payload"]["violations"][0]["layer"] == "semantic"
 
 
+def test_empty_compaction_retention_rejects_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    launcher = FakeLauncher(
+        stdout_lines=(
+            raw_event("turn.started"),
+            context_compacted_event(retained_artifact_ids=[]),
+        ),
+        final_payload=proposal_payload(),
+    )
+
+    with pytest.raises(OutputSchemaValidationError) as excinfo:
+        CodexRuntimeCoordinator(
+            ledger,
+            make_config(tmp_path),
+            launcher=launcher,
+        ).execute(intent)
+
+    assert "compacted context omitted" in excinfo.value.detail
+    attempt_dir = tmp_path / "artifacts" / "run_001" / "attempt_001"
+    quarantine = attempt_dir / "quarantine" / "proposal_quarantine_000.json"
+    assert quarantine.exists()
+
+
 def test_malformed_jsonl_event_rejected_fail_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

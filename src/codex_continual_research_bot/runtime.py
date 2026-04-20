@@ -518,7 +518,7 @@ class CodexRuntimeCoordinator:
         raw_event_count = 0
         observed_turn_count = 0
         observed_tool_call_count = 0
-        retained_artifact_ids_after_compaction: set[str] = set()
+        retained_artifact_ids_after_compaction: set[str] | None = None
         repair_attempts = 0
         repair_prompt: str | None = None
         proposal: ProposalBundle | None = None
@@ -527,6 +527,7 @@ class CodexRuntimeCoordinator:
 
         def handle_stdout_line(line: str) -> None:
             nonlocal seq, raw_event_count, observed_turn_count, observed_tool_call_count
+            nonlocal retained_artifact_ids_after_compaction
             if not line.strip():
                 return
             try:
@@ -549,6 +550,8 @@ class CodexRuntimeCoordinator:
             seq += 1
             raw_event_count += 1
             if event.event_type == RuntimeEventType.CONTEXT_COMPACTED:
+                if retained_artifact_ids_after_compaction is None:
+                    retained_artifact_ids_after_compaction = set()
                 retained_artifact_ids_after_compaction.update(
                     event.payload.retained_artifact_ids
                 )
@@ -657,8 +660,10 @@ class CodexRuntimeCoordinator:
                 path=invocation.final_message_path,
                 attempt_dir=attempt_dir,
                 request=intent.execution_request,
-                retained_artifact_ids_after_compaction=frozenset(
-                    retained_artifact_ids_after_compaction
+                retained_artifact_ids_after_compaction=(
+                    frozenset(retained_artifact_ids_after_compaction)
+                    if retained_artifact_ids_after_compaction is not None
+                    else None
                 ),
                 repair_attempts=repair_attempts,
             )
@@ -1022,7 +1027,7 @@ class CodexRuntimeCoordinator:
         path: Path,
         attempt_dir: Path,
         request: RunExecutionRequest,
-        retained_artifact_ids_after_compaction: frozenset[str],
+        retained_artifact_ids_after_compaction: frozenset[str] | None,
         repair_attempts: int,
     ) -> ProposalValidationResult:
         if not path.exists():

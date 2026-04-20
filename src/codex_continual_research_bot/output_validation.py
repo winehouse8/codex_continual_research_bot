@@ -49,7 +49,7 @@ class ProposalValidationResult:
 @dataclass(frozen=True)
 class ProposalValidationContext:
     request: RunExecutionRequest
-    retained_artifact_ids_after_compaction: frozenset[str] = frozenset()
+    retained_artifact_ids_after_compaction: frozenset[str] | None = None
 
 
 _CITATION_PLACEHOLDER_PATTERN = re.compile(
@@ -209,7 +209,7 @@ class ProposalValidator:
                 )
 
         retained_ids = context.retained_artifact_ids_after_compaction
-        if retained_ids:
+        if retained_ids is not None:
             omitted = sorted(evidence_id_set - retained_ids)
             if omitted:
                 violations.append(
