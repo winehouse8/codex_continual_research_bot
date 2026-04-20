@@ -212,6 +212,25 @@ def test_duplicate_trigger_returns_existing_report_without_reexecution(
     assert len(runtime.intents) == 1
 
 
+def test_duplicate_trigger_returns_existing_report_after_topic_advances(
+    tmp_path: Path,
+) -> None:
+    ledger = make_ledger(tmp_path)
+    runtime = FakeRuntime(make_valid_proposal())
+    service = make_service(ledger, runtime)
+    request = make_request()
+    first = service.trigger_run(request)
+    ledger.store_topic_snapshot(make_topic_snapshot(version=2))
+
+    second = service.trigger_run(request)
+
+    assert second.duplicate is True
+    assert second.resumed is False
+    assert second.topic.snapshot_version == first.topic.snapshot_version
+    assert second.report == first.report
+    assert len(runtime.intents) == 1
+
+
 def test_malformed_proposal_is_quarantined_without_graph_write(tmp_path: Path) -> None:
     ledger = make_ledger(tmp_path)
     runtime = FakeRuntime(make_malformed_canonical_proposal())
@@ -306,6 +325,7 @@ def test_interrupted_run_resume_uses_existing_run_without_duplicate_write(
         mode=RunMode.INTERACTIVE,
         expected_snapshot_version=1,
     )
+    ledger.store_topic_snapshot(make_topic_snapshot(version=2))
 
     resumed = service.trigger_run(request)
     duplicate = service.trigger_run(request)

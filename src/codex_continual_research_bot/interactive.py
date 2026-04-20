@@ -119,11 +119,6 @@ class InteractiveRunService:
     ) -> InteractiveRunTriggerResponse:
         self._validate_workspace(request.workspace_root)
         user_input_kind = self._classify_user_input(request.user_input)
-        snapshot = self._orchestrator.load_topic_snapshot(
-            topic_id=request.topic_id,
-            expected_snapshot_version=request.expected_snapshot_version,
-        )
-        topic = self._topic_read_model(snapshot)
         ids = self._ids_for_request(request)
         request_digest = self._request_digest(
             request=request,
@@ -146,6 +141,12 @@ class InteractiveRunService:
                 idempotency_key=ids["idempotency_key"],
             )
             if existing_report is not None:
+                topic = self._topic_read_model(
+                    self._orchestrator.load_topic_snapshot(
+                        topic_id=request.topic_id,
+                        snapshot_version=existing_report.snapshot_version,
+                    )
+                )
                 return InteractiveRunTriggerResponse(
                     topic=topic,
                     report=existing_report,
@@ -155,6 +156,12 @@ class InteractiveRunService:
             intent = self._orchestrator.resume_run(
                 run_id=existing["run_id"],
                 expected_snapshot_version=request.expected_snapshot_version,
+            )
+            topic = self._topic_read_model(
+                self._orchestrator.load_topic_snapshot(
+                    topic_id=request.topic_id,
+                    snapshot_version=intent.snapshot_version,
+                )
             )
             report = self._execute_intent(
                 intent=intent,
@@ -168,6 +175,11 @@ class InteractiveRunService:
                 resumed=True,
             )
 
+        snapshot = self._orchestrator.load_topic_snapshot(
+            topic_id=request.topic_id,
+            expected_snapshot_version=request.expected_snapshot_version,
+        )
+        topic = self._topic_read_model(snapshot)
         self._ledger.reserve_idempotency_key(
             idempotency_key=ids["idempotency_key"],
             scope=QueueJobKind.RUN_EXECUTE.value,
