@@ -239,6 +239,10 @@ class RunOrchestrator:
         if run is None:
             raise KeyError(f"run {run_id} does not exist")
         state = RunLifecycleState(run["status"])
+        if state == RunLifecycleState.FAILED:
+            raise InvalidRunTransitionError(
+                f"run {run_id} failed and must be requeued before resume"
+            )
         if state in {RunLifecycleState.COMPLETED, RunLifecycleState.DEAD_LETTER}:
             raise InvalidRunTransitionError(f"run {run_id} is terminal")
 

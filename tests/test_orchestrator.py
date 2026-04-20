@@ -179,6 +179,22 @@ def test_missing_topic_snapshot_fail_closed(tmp_path: Path) -> None:
     assert run["status"] == RunLifecycleState.FAILED.value
 
 
+def test_failed_run_cannot_resume_without_requeue(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path, with_snapshot=False)
+    orchestrator = RunOrchestrator(ledger)
+    with pytest.raises(MissingTopicSnapshotError):
+        orchestrator.start_queued_run(
+            queue_item_id="queue_001",
+            run_id="run_001",
+            worker_id="worker-a",
+        )
+
+    ledger.store_topic_snapshot(make_topic_snapshot())
+
+    with pytest.raises(InvalidRunTransitionError, match="must be requeued"):
+        orchestrator.resume_run(run_id="run_001")
+
+
 def test_duplicate_run_start_is_idempotent(tmp_path: Path) -> None:
     ledger = make_ledger(tmp_path)
     orchestrator = RunOrchestrator(ledger)
