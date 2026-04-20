@@ -50,6 +50,15 @@ from .orchestrator import (
     StaleTopicSnapshotError,
     STATE_TRANSITIONS,
 )
+from .operational import (
+    OperationalControlService,
+    OperatorAlertResult,
+    RepairJobRejectedError,
+    RepairJobResult,
+    ReplayArtifactMissingError,
+    ReplayDeterminismError,
+    ReplayResult,
+)
 from .persistence import QueueMutationMismatchError
 from .queue_worker import (
     QueueWorker,
@@ -126,12 +135,19 @@ __all__ = [
     "MalformedRunInputError",
     "MissingTopicSnapshotError",
     "OutputSchemaValidationError",
+    "OperationalControlService",
+    "OperatorAlertResult",
     "ProposalBundle",
     "QueueWorker",
     "QueueJob",
     "QueueMutationMismatchError",
+    "RepairJobRejectedError",
+    "RepairJobResult",
     "ResolvedCredentialLocator",
     "RetryableQueueWorkerError",
+    "ReplayArtifactMissingError",
+    "ReplayDeterminismError",
+    "ReplayResult",
     "RunExecutionRequest",
     "RunIntent",
     "RunLifecycleState",
