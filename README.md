@@ -4,11 +4,13 @@
 research. Codex is the user-facing research execution path, while the backend
 owns topic state, queue state, provenance, graph writes, and revision decisions.
 
-## CLI Contract Preview
+## CLI Quickstart
 
-Phase 12 defines the CLI information architecture before the executable CLI is
-implemented. The examples below are contract examples checked against
-`fixtures/cli_command_spec.json`.
+Phase 13 provides the executable `crb` CLI. By default it stores local operator
+state in `.crb/crb.sqlite3`; set `CRB_DB_PATH` to use a different SQLite file.
+The examples below are checked against `fixtures/cli_command_spec.json`.
+
+Start with local backend storage and a topic:
 
 ```bash
 crb init --json
@@ -19,11 +21,15 @@ crb topic show topic_codex_auth_boundary
 crb topic show topic_codex_auth_boundary --json
 ```
 
+Enqueue and inspect an interactive research run:
+
 ```bash
 crb run start topic_codex_auth_boundary --input "counterargument: warning-only stale sessions may be safe" --json
 crb run status run_2026_04_19_001 --json
 crb run resume run_2026_04_19_001
 ```
+
+Inspect queue and memory state without bypassing backend authority:
 
 ```bash
 crb queue list --topic topic_codex_auth_boundary --json
@@ -38,6 +44,8 @@ crb memory hypotheses topic_codex_auth_boundary --json
 crb graph export topic_codex_auth_boundary --format json --output graph.json
 crb graph view topic_codex_auth_boundary --format html --output graph.html
 ```
+
+Use operational commands for health, audit, and replay checks:
 
 ```bash
 crb ops health --json
