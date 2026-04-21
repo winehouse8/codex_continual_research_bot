@@ -31,3 +31,4 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 codex_continual_research_bot = ["persistence/migrations/*.sql"]
+"codex_continual_research_bot.web_static" = ["*.html", "*.css", "*.js"]

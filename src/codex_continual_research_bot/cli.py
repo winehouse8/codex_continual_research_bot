@@ -14,6 +14,7 @@ from codex_continual_research_bot.cli_contracts import (
     CliResult,
     cli_result_json,
 )
+from codex_continual_research_bot.web import DEFAULT_WEB_HOST, DEFAULT_WEB_PORT
 
 
 class CliBackend(Protocol):
@@ -186,6 +187,13 @@ def build_parser() -> argparse.ArgumentParser:
     ops_replay = _add_leaf(ops_sub, "replay", "Replay run artifacts for audit.", "ops.replay")
     ops_replay.add_argument("run_id")
     ops_replay.add_argument("--reason", required=True)
+
+    web = subparsers.add_parser("web", help="Serve the local read-only dashboard.")
+    web_sub = web.add_subparsers(dest="action", required=True)
+    web_serve = _add_leaf(web_sub, "serve", "Serve the localhost dashboard.", "web.serve")
+    web_serve.description = "Serve the localhost dashboard."
+    web_serve.add_argument("--host", default=DEFAULT_WEB_HOST)
+    web_serve.add_argument("--port", type=int, default=DEFAULT_WEB_PORT)
     return parser
 
 
@@ -301,6 +309,21 @@ def dispatch(args: argparse.Namespace, backend: CliBackend) -> dict[str, object]
         return backend.ops_audit(run_id=args.run_id)
     if command_id == "ops.replay":
         return backend.ops_replay(run_id=args.run_id, reason=args.reason)
+    if command_id == "web.serve":
+        from codex_continual_research_bot.web import serve_local_dashboard
+
+        if not isinstance(backend, LocalBackendGateway):
+            raise CliBackendError(
+                failure_code="unsupported_backend",
+                detail="web serve requires the local backend gateway",
+                retryable=False,
+                human_review_required=False,
+            )
+        return serve_local_dashboard(
+            backend=backend,
+            host=args.host,
+            port=args.port,
+        )
     raise CliBackendError(
         failure_code="unknown_command",
         detail=f"no handler registered for {command_id}",

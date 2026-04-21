@@ -24,6 +24,7 @@ crb run start topic_codex_auth_boundary --input "counterargument: warning-only s
 crb topic show topic_codex_auth_boundary
 crb memory conflicts topic_codex_auth_boundary --json
 crb graph view topic_codex_auth_boundary --scope latest --format html --output graph.html
+crb web serve
 ```
 
 `run start`의 JSON 응답에는 `run_id`와 `queue_item_id`가 들어 있습니다. 이후 상태 확인에는 그 값을 사용합니다.
@@ -84,6 +85,7 @@ CLI Summary / Graph Visualization
 | 운영 상태 확인 | `crb ops health --json` |
 | run audit | `crb ops audit "$run_id" --json` |
 | 완료 run replay 요청 | `crb ops replay "<completed-run-id>" --reason "operator replay audit" --json` |
+| 로컬 dashboard 실행 | `crb web serve` |
 
 아래 예시는 CLI 계약 테스트가 검증하는 실제 명령 모음입니다.
 
@@ -111,6 +113,7 @@ crb graph view topic_codex_auth_boundary --scope latest --format html --output g
 crb ops health --json
 crb ops audit "$run_id" --json
 crb ops replay "<completed-run-id>" --reason "operator replay audit" --json
+crb web serve
 ```
 
 ## Codex의 역할
@@ -157,6 +160,26 @@ Graph export와 HTML view는 backend-owned canonical graph 또는 topic snapshot
 | `graph.dot` | Graphviz 기반 리뷰 diff |
 | `graph.mmd` | Mermaid 기반 문서/이슈 공유 |
 | `graph.html` | 의존성 없는 로컬 inspection page |
+
+## Local Web Dashboard
+
+`crb web serve`는 기본적으로 `127.0.0.1:8765`에 read-only dashboard를 실행합니다. 브라우저에서 topic overview, run timeline, queue, memory projection을 확인할 수 있으며, HTTP API도 같은 backend read model을 반환합니다.
+
+```bash
+crb web serve
+```
+
+주요 read-only API:
+
+| 목적 | 경로 |
+| --- | --- |
+| topic 목록 | `GET /api/topics` |
+| topic overview | `GET /api/topics/{topic_id}` |
+| topic runs | `GET /api/topics/{topic_id}/runs` |
+| topic queue | `GET /api/topics/{topic_id}/queue` |
+| topic memory | `GET /api/topics/{topic_id}/memory` |
+
+web surface는 topic 생성, run 시작, queue retry 같은 write 작업을 제공하지 않습니다. 모든 non-GET 요청은 `read_only_web_surface`로 거부되며, backend state, graph, queue, provenance ledger가 계속 authority입니다.
 
 ## Understanding The First Result
 
