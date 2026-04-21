@@ -1,0 +1,37 @@
+Topic: Codex auth boundary
+Snapshot: v7
+Status: latest run completed (run_2026_04_19_001)
+
+Current best hypotheses:
+- Fail closed on workspace drift [medium]: Scheduled execution should stop when backend inspection cannot confirm the configured workspace root.
+
+Challenger targets:
+- Warning-only stale session path: A stale but account-verified session might be safe to defer without blocking the queue.
+
+Active conflicts:
+- conf_001 (unresolved): Freshness failure can mean recoverable token age or security-relevant identity drift.
+
+Uncertainty:
+Medium confidence: identity drift is dangerous, but the boundary between stale and mismatched sessions still needs adversarial verification.
+
+Run result:
+The current best hypothesis remains in force, but the next run should isolate session age from principal drift.
+Conflict delta: conf_001 remains unresolved and was escalated for the next frontier selection.
+
+Backend state update:
+- Required: yes
+- Applied: yes
+- Graph digest: sha256:graph-write-007
+- Review flags: unresolved_conflict_visible
+
+Queue:
+- queue_001 run.execute (queued): Attack the current best hypothesis with a warning-only stale-session challenger.
+
+Memory:
+- Graph digest: sha256:graph-write-007
+- Hypotheses: 2; conflicts: 1
+- Visualization note: Graph visualization is not a source of truth; backend graph and provenance ledgers remain authoritative.
+
+Next actions:
+- Compare stale-session outcomes against successful account/read verification.
+- Keep workspace mismatch as a fail-closed condition until the challenger is adjudicated.

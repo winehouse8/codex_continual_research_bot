@@ -1,0 +1,114 @@
+{
+  "schema_id": "crb.ux.read_models.v1",
+  "topic": {
+    "schema_id": "crb.topic.read_model.v1",
+    "topic_id": "topic_codex_auth_boundary",
+    "title": "Codex auth boundary",
+    "snapshot_version": 7,
+    "topic_summary": "Tracks whether scheduled research can safely reuse a Codex session when freshness and workspace signals diverge.",
+    "current_best_hypotheses": [
+      {
+        "hypothesis_id": "hyp_001",
+        "title": "Fail closed on workspace drift",
+        "summary": "Scheduled execution should stop when backend inspection cannot confirm the configured workspace root.",
+        "confidence": "medium",
+        "why_currently_best": "It preserves principal and workspace isolation while the session healthcheck path is still being validated.",
+        "provenance_ids": [
+          "prov_001",
+          "prov_002"
+        ]
+      }
+    ],
+    "challenger_targets": [
+      {
+        "hypothesis_id": "hyp_002",
+        "title": "Warning-only stale session path",
+        "summary": "A stale but account-verified session might be safe to defer without blocking the queue.",
+        "confidence": "contested",
+        "why_currently_best": "It is not currently best; it is retained as the next challenger because it could reduce false terminal failures.",
+        "provenance_ids": [
+          "prov_003"
+        ]
+      }
+    ],
+    "active_conflicts": [
+      {
+        "conflict_id": "conf_001",
+        "status": "unresolved",
+        "summary": "Freshness failure can mean recoverable token age or security-relevant identity drift.",
+        "why_it_matters": "The CLI must not summarize the topic as simply healthy or failed while this ambiguity is unresolved."
+      }
+    ],
+    "open_questions": [
+      "Can session age be separated from workspace drift before queue retry?",
+      "Should healthcheck jobs and run.execute jobs share retry limits?"
+    ],
+    "queue_overview": [
+      {
+        "queue_item_id": "queue_001",
+        "kind": "run.execute",
+        "state": "queued",
+        "objective": "Attack the current best hypothesis with a warning-only stale-session challenger.",
+        "priority": 80,
+        "attempts": 0,
+        "next_visible_action": "Worker may claim this after session preflight succeeds."
+      }
+    ],
+    "uncertainty": "Medium confidence: identity drift is dangerous, but the boundary between stale and mismatched sessions still needs adversarial verification.",
+    "provenance_digest": "sha256:topic-provenance-007",
+    "generated_at": "2026-04-19T12:00:00Z"
+  },
+  "run": {
+    "schema_id": "crb.run.read_model.v1",
+    "run_id": "run_2026_04_19_001",
+    "topic_id": "topic_codex_auth_boundary",
+    "status": "completed",
+    "objective": "Re-evaluate whether Codex auth inspection should block scheduled execution when workspace policy drifts.",
+    "summary": "The current best hypothesis remains in force, but the next run should isolate session age from principal drift.",
+    "uncertainty": "The strongest unresolved uncertainty is whether a stale but account-verified session can be retried without human review.",
+    "conflict_delta": "conf_001 remains unresolved and was escalated for the next frontier selection.",
+    "backend_state_update_required": true,
+    "backend_state_update_applied": true,
+    "backend_state_update": {
+      "graph_digest": "sha256:graph-write-007",
+      "node_count": 8,
+      "edge_count": 7,
+      "review_flags": [
+        "unresolved_conflict_visible"
+      ]
+    },
+    "next_actions": [
+      "Compare stale-session outcomes against successful account/read verification.",
+      "Keep workspace mismatch as a fail-closed condition until the challenger is adjudicated."
+    ],
+    "created_at": "2026-04-19T12:05:00Z"
+  },
+  "queue": {
+    "schema_id": "crb.queue.read_model.v1",
+    "topic_id": "topic_codex_auth_boundary",
+    "queued_count": 1,
+    "blocked_count": 0,
+    "items": [
+      {
+        "queue_item_id": "queue_001",
+        "kind": "run.execute",
+        "state": "queued",
+        "objective": "Attack the current best hypothesis with a warning-only stale-session challenger.",
+        "priority": 80,
+        "attempts": 0,
+        "next_visible_action": "Worker may claim this after session preflight succeeds."
+      }
+    ],
+    "operator_note": "Queue mutations must go through backend retry or resume workflows."
+  },
+  "memory": {
+    "schema_id": "crb.memory.read_model.v1",
+    "topic_id": "topic_codex_auth_boundary",
+    "graph_digest": "sha256:graph-write-007",
+    "hypothesis_count": 2,
+    "evidence_count": 2,
+    "conflict_count": 1,
+    "provenance_notice": "Every displayed claim traces to backend provenance ids; missing provenance must stay hidden from current-best summaries.",
+    "visualization_notice": "Graph visualization is not a source of truth; backend graph and provenance ledgers remain authoritative."
+  }
+}
