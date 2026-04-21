@@ -1,0 +1,411 @@
+{
+  "schema_id": "crb.web.dashboard.bundle.v1",
+  "information_architecture": {
+    "schema_id": "crb.web.dashboard.ia.v1",
+    "title": "Local research dashboard",
+    "default_view": "overview",
+    "authority_notice": {
+      "notice_id": "authority_backend_projection",
+      "text": "Dashboard cards and graph views are projections, not a source of truth; backend state, graph, queue, and provenance ledgers remain authoritative.",
+      "source_of_truth": "backend",
+      "projection_only": true
+    },
+    "navigation": [
+      {
+        "view_id": "overview",
+        "label": "Overview",
+        "summary": "Shows current best hypotheses, unresolved risk, and next research action.",
+        "primary_metric": "1 active conflict"
+      },
+      {
+        "view_id": "hypothesis_board",
+        "label": "Hypothesis board",
+        "summary": "Separates current best hypotheses from challengers and retired stale claims.",
+        "primary_metric": "2 active hypotheses"
+      },
+      {
+        "view_id": "graph_explorer",
+        "label": "Graph explorer",
+        "summary": "Displays a backend graph projection with provenance and conflict badges.",
+        "primary_metric": "8 nodes"
+      },
+      {
+        "view_id": "run_timeline",
+        "label": "Run timeline",
+        "summary": "Shows run lifecycle events, backend state update status, and follow-up actions.",
+        "primary_metric": "completed"
+      }
+    ]
+  },
+  "overview": {
+    "schema_id": "crb.web.overview.view_model.v1",
+    "topic_id": "topic_codex_auth_boundary",
+    "title": "Codex auth boundary",
+    "snapshot_version": 7,
+    "state": "ready",
+    "generated_at": "2026-04-19T12:15:00Z",
+    "authority_notice": {
+      "notice_id": "authority_backend_projection",
+      "text": "Dashboard cards and graph views are projections, not a source of truth; backend state, graph, queue, and provenance ledgers remain authoritative.",
+      "source_of_truth": "backend",
+      "projection_only": true
+    },
+    "topic_summary": "Tracks whether scheduled research can safely reuse a Codex session when freshness and workspace signals diverge.",
+    "current_best_hypotheses": [
+      {
+        "hypothesis_id": "hyp_001",
+        "title": "Fail closed on workspace drift",
+        "summary": "Scheduled execution should stop when backend inspection cannot confirm the configured workspace root.",
+        "confidence": "medium",
+        "why_currently_best": "It preserves principal and workspace isolation while the session healthcheck path is still being validated.",
+        "provenance_ids": [
+          "prov_001",
+          "prov_002"
+        ]
+      }
+    ],
+    "active_conflicts": [
+      {
+        "conflict_id": "conf_001",
+        "status": "unresolved",
+        "summary": "Freshness failure can mean recoverable token age or security-relevant identity drift.",
+        "why_it_matters": "The dashboard must not summarize the topic as simply healthy while this ambiguity is unresolved."
+      }
+    ],
+    "status_indicators": [
+      {
+        "indicator_id": "active_conflicts",
+        "label": "Active conflict",
+        "severity": "warning",
+        "summary": "One unresolved conflict blocks treating the stale-session challenger as safe.",
+        "next_visible_action": "Open the graph explorer or run timeline before retrying the queue item."
+      },
+      {
+        "indicator_id": "queue_health",
+        "label": "Queue health",
+        "severity": "normal",
+        "summary": "One queued run remains available after session preflight succeeds.",
+        "next_visible_action": "Worker may claim queue_001 after backend preflight."
+      }
+    ],
+    "next_research_actions": [
+      {
+        "action_id": "action_001",
+        "label": "Attack stale-session challenger",
+        "reason": "The current best hypothesis depends on distinguishing recoverable staleness from identity drift.",
+        "queue_item_id": "queue_001",
+        "command_hint": "crb run start topic_codex_auth_boundary --input \"counterargument: warning-only stale sessions may be safe\" --json"
+      }
+    ]
+  },
+  "hypothesis_board": {
+    "schema_id": "crb.web.hypothesis_board.view_model.v1",
+    "topic_id": "topic_codex_auth_boundary",
+    "snapshot_version": 7,
+    "state": "ready",
+    "authority_notice": {
+      "notice_id": "authority_backend_projection",
+      "text": "Dashboard cards and graph views are projections, not a source of truth; backend state, graph, queue, and provenance ledgers remain authoritative.",
+      "source_of_truth": "backend",
+      "projection_only": true
+    },
+    "columns": [
+      {
+        "lane": "current_best",
+        "title": "Current best",
+        "cards": [
+          {
+            "hypothesis_id": "hyp_001",
+            "lane": "current_best",
+            "title": "Fail closed on workspace drift",
+            "summary": "Stop scheduled execution when backend inspection cannot confirm the configured workspace root.",
+            "confidence": "medium",
+            "support_count": 2,
+            "challenge_count": 1,
+            "conflict_ids": [
+              "conf_001"
+            ],
+            "provenance_ids": [
+              "prov_001",
+              "prov_002"
+            ],
+            "stale": false,
+            "next_visible_action": "Compare against the warning-only stale session challenger."
+          }
+        ]
+      },
+      {
+        "lane": "challenger",
+        "title": "Challengers",
+        "cards": [
+          {
+            "hypothesis_id": "hyp_002",
+            "lane": "challenger",
+            "title": "Warning-only stale session path",
+            "summary": "A stale but account-verified session might be safe to defer without blocking the queue.",
+            "confidence": "contested",
+            "support_count": 1,
+            "challenge_count": 2,
+            "conflict_ids": [
+              "conf_001"
+            ],
+            "provenance_ids": [
+              "prov_003"
+            ],
+            "stale": false,
+            "next_visible_action": "Gather support and challenge evidence before retry policy changes."
+          }
+        ]
+      },
+      {
+        "lane": "retired",
+        "title": "Retired or stale",
+        "cards": [
+          {
+            "hypothesis_id": "hyp_000",
+            "lane": "retired",
+            "title": "Reuse every ChatGPT session",
+            "summary": "Older claim retired because it lacks principal, workspace, and freshness boundaries.",
+            "confidence": "low",
+            "support_count": 0,
+            "challenge_count": 3,
+            "conflict_ids": [],
+            "provenance_ids": [
+              "prov_000"
+            ],
+            "stale": true,
+            "next_visible_action": "Keep visible as stale context; do not use as current best."
+          }
+        ]
+      }
+    ]
+  },
+  "graph_explorer": {
+    "schema_id": "crb.web.graph_explorer.view_model.v1",
+    "topic_id": "topic_codex_auth_boundary",
+    "snapshot_version": 7,
+    "state": "ready",
+    "authority_notice": {
+      "notice_id": "authority_backend_projection",
+      "text": "Dashboard cards and graph views are projections, not a source of truth; backend state, graph, queue, and provenance ledgers remain authoritative.",
+      "source_of_truth": "backend",
+      "projection_only": true
+    },
+    "projection_source": "backend canonical graph projection",
+    "json_schema_id": "crb.web.graph_explorer.view_model.v1",
+    "nodes": [
+      {
+        "node_id": "hyp_001",
+        "node_type": "hypothesis",
+        "label": "Fail closed on workspace drift",
+        "summary": "Current best hypothesis for scheduled execution safety.",
+        "severity": "normal",
+        "provenance_ids": [
+          "prov_001",
+          "prov_002"
+        ]
+      },
+      {
+        "node_id": "hyp_002",
+        "node_type": "hypothesis",
+        "label": "Warning-only stale session path",
+        "summary": "Challenger hypothesis retained for adversarial validation.",
+        "severity": "warning",
+        "provenance_ids": [
+          "prov_003"
+        ]
+      },
+      {
+        "node_id": "conf_001",
+        "node_type": "conflict",
+        "label": "Stale session versus identity drift",
+        "summary": "Unresolved conflict blocks treating stale sessions as safe.",
+        "severity": "warning",
+        "provenance_ids": [
+          "prov_002",
+          "prov_003"
+        ]
+      },
+      {
+        "node_id": "prov_001",
+        "node_type": "provenance",
+        "label": "Session inspection fixture",
+        "summary": "Backend-owned fixture proving principal and workspace checks are first-class contract fields.",
+        "severity": "info",
+        "provenance_ids": []
+      }
+    ],
+    "edges": [
+      {
+        "edge_id": "edge_web_001",
+        "edge_type": "challenges",
+        "source_node_id": "hyp_002",
+        "target_node_id": "hyp_001",
+        "label": "challenger"
+      },
+      {
+        "edge_id": "edge_web_002",
+        "edge_type": "conflicts_with",
+        "source_node_id": "conf_001",
+        "target_node_id": "hyp_002",
+        "label": "unresolved"
+      },
+      {
+        "edge_id": "edge_web_003",
+        "edge_type": "derived_from",
+        "source_node_id": "hyp_001",
+        "target_node_id": "prov_001",
+        "label": "provenance"
+      }
+    ],
+    "focus_node_ids": [
+      "hyp_001",
+      "conf_001"
+    ],
+    "filters": [
+      {
+        "filter_id": "show_conflicts",
+        "label": "Conflicts",
+        "enabled": true
+      },
+      {
+        "filter_id": "show_provenance",
+        "label": "Provenance",
+        "enabled": true
+      }
+    ]
+  },
+  "run_timeline": {
+    "schema_id": "crb.web.run_timeline.view_model.v1",
+    "topic_id": "topic_codex_auth_boundary",
+    "run_id": "run_2026_04_19_001",
+    "state": "ready",
+    "authority_notice": {
+      "notice_id": "authority_backend_projection",
+      "text": "Dashboard cards and graph views are projections, not a source of truth; backend state, graph, queue, and provenance ledgers remain authoritative.",
+      "source_of_truth": "backend",
+      "projection_only": true
+    },
+    "current_lifecycle_state": "completed",
+    "backend_state_update_applied": true,
+    "events": [
+      {
+        "event_id": "timeline_001",
+        "timestamp": "2026-04-19T12:00:00Z",
+        "lifecycle_state": "queued",
+        "title": "Run queued",
+        "detail": "Queue item selected the stale-session challenger for attack.",
+        "severity": "info"
+      },
+      {
+        "event_id": "timeline_002",
+        "timestamp": "2026-04-19T12:02:00Z",
+        "lifecycle_state": "attacking_current_best",
+        "title": "Current best challenged",
+        "detail": "The run compared fail-closed workspace drift against warning-only stale-session handling.",
+        "severity": "info"
+      },
+      {
+        "event_id": "timeline_003",
+        "timestamp": "2026-04-19T12:04:00Z",
+        "lifecycle_state": "adjudicating",
+        "title": "Conflict retained",
+        "detail": "The unresolved conflict remained visible because evidence did not separate staleness from identity drift.",
+        "severity": "warning"
+      },
+      {
+        "event_id": "timeline_004",
+        "timestamp": "2026-04-19T12:05:00Z",
+        "lifecycle_state": "completed",
+        "title": "Backend update applied",
+        "detail": "Backend graph update was accepted and the next frontier action was recorded.",
+        "severity": "normal"
+      }
+    ],
+    "next_actions": [
+      {
+        "action_id": "timeline_action_001",
+        "label": "Schedule adversarial verification",
+        "reason": "The conflict remains unresolved after the completed run.",
+        "queue_item_id": "queue_001",
+        "command_hint": "crb run status run_2026_04_19_001 --json"
+      }
+    ]
+  },
+  "state_snapshots": [
+    {
+      "snapshot_id": "state_loading_overview",
+      "view_id": "overview",
+      "state": "loading",
+      "title": "Loading backend snapshot",
+      "message": "The dashboard is waiting for a backend-owned topic snapshot before showing research state.",
+      "severity": "info",
+      "next_visible_action": "Keep the view in a loading state until the backend snapshot response arrives."
+    },
+    {
+      "snapshot_id": "state_empty_hypothesis_board",
+      "view_id": "hypothesis_board",
+      "state": "empty",
+      "title": "No hypotheses yet",
+      "message": "The topic has no accepted backend hypothesis projection; do not invent placeholder conclusions.",
+      "severity": "info",
+      "next_visible_action": "Prompt for topic bootstrap or show queued bootstrap work."
+    },
+    {
+      "snapshot_id": "state_error_graph_explorer",
+      "view_id": "graph_explorer",
+      "state": "error",
+      "title": "Graph projection unavailable",
+      "message": "The graph projection failed validation, so the dashboard must hide graph content until backend repair succeeds.",
+      "severity": "critical",
+      "next_visible_action": "Show backend repair guidance and preserve the authority notice."
+    },
+    {
+      "snapshot_id": "state_dead_letter_timeline",
+      "view_id": "run_timeline",
+      "state": "dead_letter",
+      "title": "Run is dead-lettered",
+      "message": "The run reached terminal queue failure and needs explicit backend retry or repair before it can continue.",
+      "severity": "critical",
+      "next_visible_action": "Link to the dead-letter detail endpoint and show retryability."
+    },
+    {
+      "snapshot_id": "state_stale_claim_overview",
+      "view_id": "overview",
+      "state": "stale_claim",
+      "title": "Queue claim is stale",
+      "message": "A worker claim exceeded the stale threshold; this is not healthy queued work.",
+      "severity": "warning",
+      "next_visible_action": "Show recover-stale or dead-letter recovery actions mediated by the backend."
+    }
+  ],
+  "api_schema_catalog": {
+    "schema_id": "crb.web.api_schema_catalog.v1",
+    "endpoints": [
+      {
+        "route": "/api/web/topics/{topic_id}/dashboard",
+        "method": "GET",
+        "response_schema_id": "crb.web.dashboard.bundle.v1",
+        "fixture": "fixtures/web_dashboard_view_models.json"
+      },
+      {
+        "route": "/api/web/topics/{topic_id}/overview",
+        "method": "GET",
+        "response_schema_id": "crb.web.overview.view_model.v1",
+        "fixture": "fixtures/web_dashboard_view_models.json#/overview"
+      },
+      {
+        "route": "/api/web/topics/{topic_id}/graph",
+        "method": "GET",
+        "response_schema_id": "crb.web.graph_explorer.view_model.v1",
+        "fixture": "fixtures/web_dashboard_view_models.json#/graph_explorer"
+      },
+      {
+        "route": "/api/web/runs/{run_id}/timeline",
+        "method": "GET",
+        "response_schema_id": "crb.web.run_timeline.view_model.v1",
+        "fixture": "fixtures/web_dashboard_view_models.json#/run_timeline"
+      }
+    ]
+  }
+}
