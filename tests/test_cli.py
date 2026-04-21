@@ -48,6 +48,80 @@ def test_readme_command_examples_parse() -> None:
         assert args.command_id
 
 
+def test_readme_quickstart_uses_generated_ids_and_basic_flow_executes(
+    tmp_path: Path,
+) -> None:
+    readme = (ROOT / "README.md").read_text()
+    assert "run_2026_04_19_001" not in readme
+    assert "queue_001" not in readme
+
+    backend = LocalBackendGateway(
+        db_path=tmp_path / "crb.sqlite3",
+        workspace_root=tmp_path,
+    )
+    assert run_cli(["init", "--json"], backend)[0] == 0
+    assert run_cli(["doctor", "--json"], backend)[0] == 0
+    assert (
+        run_cli(
+            [
+                "topic",
+                "create",
+                "Codex auth boundary",
+                "--objective",
+                "Track session ownership risk",
+                "--json",
+            ],
+            backend,
+        )[0]
+        == 0
+    )
+    assert run_cli(["topic", "list", "--json"], backend)[0] == 0
+    assert run_cli(["topic", "show", "topic_codex_auth_boundary"], backend)[0] == 0
+
+    code, output, _ = run_cli(
+        [
+            "run",
+            "start",
+            "topic_codex_auth_boundary",
+            "--input",
+            "counterargument: warning-only stale sessions may be safe",
+            "--json",
+        ],
+        backend,
+    )
+    start = parsed_json(output)
+    run_id = str(start.data["run_id"])
+    queue_item_id = str(start.data["queue_item_id"])
+
+    assert code == 0
+    assert run_id.startswith("run_")
+    assert queue_item_id.startswith("queue_")
+    assert run_cli(["run", "status", run_id, "--json"], backend)[0] == 0
+    assert run_cli(["run", "resume", run_id], backend)[0] == 0
+    assert (
+        run_cli(
+            ["queue", "list", "--topic", "topic_codex_auth_boundary", "--json"],
+            backend,
+        )[0]
+        == 0
+    )
+    assert run_cli(["queue", "dead-letter", queue_item_id], backend)[0] == 0
+    assert (
+        run_cli(["memory", "snapshot", "topic_codex_auth_boundary", "--json"], backend)[0]
+        == 0
+    )
+    assert (
+        run_cli(["memory", "conflicts", "topic_codex_auth_boundary", "--json"], backend)[0]
+        == 0
+    )
+    assert (
+        run_cli(["memory", "hypotheses", "topic_codex_auth_boundary", "--json"], backend)[0]
+        == 0
+    )
+    assert run_cli(["ops", "health", "--json"], backend)[0] == 0
+    assert run_cli(["ops", "audit", run_id, "--json"], backend)[0] == 0
+
+
 def test_topic_create_list_show_flow(tmp_path: Path) -> None:
     backend = LocalBackendGateway(db_path=tmp_path / "crb.sqlite3", workspace_root=tmp_path)
 

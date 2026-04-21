@@ -25,16 +25,30 @@ Enqueue and inspect an interactive research run:
 
 ```bash
 crb run start topic_codex_auth_boundary --input "counterargument: warning-only stale sessions may be safe" --json
-crb run status run_2026_04_19_001 --json
-crb run resume run_2026_04_19_001
+```
+
+For a copy/paste flow, capture the generated ids from the enqueue receipt:
+
+```bash
+run_start_json=$(crb run start topic_codex_auth_boundary --input "counterargument: warning-only stale sessions may be safe" --json)
+printf '%s\n' "$run_start_json"
+run_id=$(RUN_START_JSON="$run_start_json" python -c 'import json, os; print(json.loads(os.environ["RUN_START_JSON"])["data"]["run_id"])')
+queue_item_id=$(RUN_START_JSON="$run_start_json" python -c 'import json, os; print(json.loads(os.environ["RUN_START_JSON"])["data"]["queue_item_id"])')
+crb run status "$run_id" --json
+crb run resume "$run_id"
 ```
 
 Inspect queue and memory state without bypassing backend authority:
 
 ```bash
 crb queue list --topic topic_codex_auth_boundary --json
-crb queue retry queue_001 --reason "operator confirmed transient transport failure" --json
-crb queue dead-letter queue_001
+crb queue dead-letter "$queue_item_id"
+```
+
+If `queue list` shows a dead-letter item, retry it with:
+
+```bash
+crb queue retry "<dead-letter-queue-item-id>" --reason "operator confirmed transient transport failure" --json
 ```
 
 ```bash
@@ -49,8 +63,13 @@ Use operational commands for health, audit, and replay checks:
 
 ```bash
 crb ops health --json
-crb ops audit run_2026_04_19_001 --json
-crb ops replay run_2026_04_19_001 --reason "operator replay audit" --json
+crb ops audit "$run_id" --json
+```
+
+After a run has completed canonical artifacts, replay it for audit with:
+
+```bash
+crb ops replay "<completed-run-id>" --reason "operator replay audit" --json
 ```
 
 ## UX Guarantees

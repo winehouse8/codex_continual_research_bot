@@ -145,7 +145,7 @@
       "json_schema_id": "crb.ux.read_models.v1",
       "human_summary_shape": "run-status-summary.v1",
       "examples": [
-        "crb run status run_2026_04_19_001 --json"
+        "crb run status \"$run_id\" --json"
       ]
     },
     {
@@ -166,7 +166,7 @@
       "json_schema_id": "crb.ux.read_models.v1",
       "human_summary_shape": "run-resume-summary.v1",
       "examples": [
-        "crb run resume run_2026_04_19_001"
+        "crb run resume \"$run_id\""
       ]
     },
     {
@@ -207,7 +207,7 @@
       "json_schema_id": "crb.ux.read_models.v1",
       "human_summary_shape": "queue-retry-summary.v1",
       "examples": [
-        "crb queue retry queue_001 --reason \"operator confirmed transient transport failure\" --json"
+        "crb queue retry \"<dead-letter-queue-item-id>\" --reason \"operator confirmed transient transport failure\" --json"
       ]
     },
     {
@@ -228,7 +228,7 @@
       "json_schema_id": "crb.ux.read_models.v1",
       "human_summary_shape": "queue-dead-letter-summary.v1",
       "examples": [
-        "crb queue dead-letter queue_001"
+        "crb queue dead-letter \"$queue_item_id\""
       ]
     },
     {
@@ -379,7 +379,7 @@
       "json_schema_id": "crb.ux.read_models.v1",
       "human_summary_shape": "ops-audit-summary.v1",
       "examples": [
-        "crb ops audit run_2026_04_19_001 --json"
+        "crb ops audit \"$run_id\" --json"
       ]
     },
     {
@@ -401,7 +401,7 @@
       "json_schema_id": "crb.ux.read_models.v1",
       "human_summary_shape": "ops-replay-summary.v1",
       "examples": [
-        "crb ops replay run_2026_04_19_001 --reason \"operator replay audit\" --json"
+        "crb ops replay \"<completed-run-id>\" --reason \"operator replay audit\" --json"
       ]
     }
   ],
