@@ -804,3 +804,75 @@ docs/
 - OpenAI API docs, local shell guidance: <https://platform.openai.com/docs/guides/tools-local-shell>
 - OpenAI Developers, Docs MCP: <https://developers.openai.com/learn/docs-mcp>
 - Graphiti official repository README: <https://github.com/getzep/graphiti>
+
+
+## 23. CLI, UX, And Graph Visualization Architecture
+
+### 23.1 Architecture Goal
+
+CLI/UX 계층은 backend state를 조작하는 새 authority가 아니다.
+사용자와 운영자가 existing backend authority를 안전하게 읽고, 검증된 command path를 통해 action을 요청하는 entrypoint다.
+
+### 23.2 Proposed Modules
+
+```text
+src/codex_continual_research_bot/cli.py
+src/codex_continual_research_bot/ux.py
+src/codex_continual_research_bot/graph_view.py
+src/codex_continual_research_bot/reporting.py
+```
+
+책임 분리:
+
+- `cli.py`: argparse/command routing, exit code, JSON/human output mode
+- `ux.py`: topic/run/queue/memory summary view models
+- `graph_view.py`: canonical graph / topic snapshot projection export
+- `reporting.py`: Markdown/HTML/Mermaid/DOT artifact rendering
+
+### 23.3 CLI Command Boundary
+
+CLI command는 service layer를 호출해야 하며 persistence table이나 graph write를 직접 수정하면 안 된다.
+쓰기 command는 기존 queue/orchestrator/session/tool policy boundary를 재사용한다.
+
+```text
+CLI command
+  -> application service
+  -> orchestrator / queue / operational service
+  -> ledger / canonical graph read model
+```
+
+### 23.4 Visualization Read Model
+
+Graph visualization은 projection이다.
+입력은 canonical graph, topic snapshot, run/event/provenance ledger이며 출력은 artifact다.
+
+```text
+Canonical graph + topic snapshot + run ledger
+  -> graph_view projection
+  -> JSON / DOT / Mermaid / HTML artifact
+```
+
+visualization artifact는 audit 대상이 될 수 있지만 source of truth가 아니다.
+
+### 23.5 UX Failure Handling
+
+CLI는 실패를 숨기지 않고 상태를 분류해야 한다.
+
+- retryable failure
+- terminal/dead-letter failure
+- human-review-required failure
+- stale snapshot / replay mismatch
+- auth/session/workspace isolation failure
+- stagnation / no competition pressure
+
+각 실패는 next action을 하나 이상 제안해야 한다.
+
+### 23.6 Testing Strategy
+
+- CLI help snapshot tests
+- command parser tests
+- JSON output schema tests
+- topic/run/queue summary tests
+- graph export determinism tests
+- malformed graph/read-model input rejection tests
+- no-direct-write boundary tests
