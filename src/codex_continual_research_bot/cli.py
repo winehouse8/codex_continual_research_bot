@@ -51,6 +51,7 @@ class CliBackend(Protocol):
         topic_id: str,
         output_format: str,
         output_path: str,
+        scope: str = "latest",
     ) -> dict[str, object]: ...
 
     def graph_view(
@@ -59,6 +60,7 @@ class CliBackend(Protocol):
         topic_id: str,
         output_format: str,
         output_path: str,
+        scope: str = "latest",
     ) -> dict[str, object]: ...
 
     def ops_health(self) -> dict[str, object]: ...
@@ -141,10 +143,12 @@ def build_parser() -> argparse.ArgumentParser:
     graph_export = _add_leaf(graph_sub, "export", "Export a graph visualization artifact.", "graph.export")
     graph_export.add_argument("topic_id")
     graph_export.add_argument("--format", choices=("json", "dot", "mermaid"), default="json")
+    graph_export.add_argument("--scope", choices=("latest", "history"), default="latest")
     graph_export.add_argument("--output", required=True)
     graph_view = _add_leaf(graph_sub, "view", "Render a graph visualization artifact.", "graph.view")
     graph_view.add_argument("topic_id")
     graph_view.add_argument("--format", choices=("html",), default="html")
+    graph_view.add_argument("--scope", choices=("latest", "history"), default="latest")
     graph_view.add_argument("--output", required=True)
 
     ops = subparsers.add_parser("ops", help="Inspect health, audit, and replay.")
@@ -249,12 +253,14 @@ def dispatch(args: argparse.Namespace, backend: CliBackend) -> dict[str, object]
             topic_id=args.topic_id,
             output_format=args.format,
             output_path=args.output,
+            scope=args.scope,
         )
     if command_id == "graph.view":
         return backend.graph_view(
             topic_id=args.topic_id,
             output_format=args.format,
             output_path=args.output,
+            scope=args.scope,
         )
     if command_id == "ops.health":
         return backend.ops_health()
