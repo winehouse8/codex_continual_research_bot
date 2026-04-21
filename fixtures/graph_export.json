@@ -1,0 +1,120 @@
+{
+  "schema_id": "crb.graph_export.v1",
+  "export_id": "graph_export_2026_04_19_001",
+  "topic_id": "topic_codex_auth_boundary",
+  "snapshot_version": 7,
+  "graph_digest": "sha256:graph-write-007",
+  "generated_at": "2026-04-19T12:10:00Z",
+  "authority_notice": "This graph export is a visualization artifact, not a source of truth; backend graph and provenance ledgers remain authoritative.",
+  "nodes": [
+    {
+      "node_id": "topic_codex_auth_boundary",
+      "node_type": "topic",
+      "label": "Codex auth boundary",
+      "summary": "Topic tracking Codex session ownership and scheduled execution safety.",
+      "temporal_scope": "2026-04-19 onward",
+      "provenance_ids": []
+    },
+    {
+      "node_id": "hyp_001",
+      "node_type": "hypothesis",
+      "label": "Fail closed on workspace drift",
+      "summary": "Scheduled execution should stop when backend inspection cannot confirm the configured workspace root.",
+      "temporal_scope": "2026-04-19 onward",
+      "provenance_ids": [
+        "prov_001",
+        "prov_002"
+      ]
+    },
+    {
+      "node_id": "hyp_002",
+      "node_type": "hypothesis",
+      "label": "Warning-only stale session path",
+      "summary": "A stale but account-verified session might be safe to defer without blocking the queue.",
+      "temporal_scope": "2026-04-19 onward",
+      "provenance_ids": [
+        "prov_003"
+      ]
+    },
+    {
+      "node_id": "claim_001",
+      "node_type": "claim",
+      "label": "Workspace drift must block scheduled execution",
+      "summary": "Principal and workspace isolation cannot rely on warning-only behavior.",
+      "temporal_scope": "2026-04-19 onward",
+      "provenance_ids": [
+        "prov_001"
+      ]
+    },
+    {
+      "node_id": "conf_001",
+      "node_type": "conflict",
+      "label": "Stale session versus identity drift",
+      "summary": "Freshness failure can mean recoverable token age or security-relevant identity drift.",
+      "temporal_scope": "2026-04-19 onward",
+      "provenance_ids": [
+        "prov_002",
+        "prov_003"
+      ]
+    },
+    {
+      "node_id": "prov_001",
+      "node_type": "provenance",
+      "label": "Session inspection fixture",
+      "summary": "Backend-owned fixture proving principal and workspace checks are first-class contract fields.",
+      "temporal_scope": "2026-04-19",
+      "provenance_ids": []
+    }
+  ],
+  "edges": [
+    {
+      "edge_id": "edge_001",
+      "edge_type": "visualizes",
+      "source_node_id": "topic_codex_auth_boundary",
+      "target_node_id": "hyp_001",
+      "summary": "Topic currently displays hyp_001 as the current best hypothesis.",
+      "provenance_ids": []
+    },
+    {
+      "edge_id": "edge_002",
+      "edge_type": "challenges",
+      "source_node_id": "hyp_002",
+      "target_node_id": "hyp_001",
+      "summary": "The warning-only stale-session hypothesis challenges fail-closed handling.",
+      "provenance_ids": [
+        "prov_003"
+      ]
+    },
+    {
+      "edge_id": "edge_003",
+      "edge_type": "supports",
+      "source_node_id": "claim_001",
+      "target_node_id": "hyp_001",
+      "summary": "The claim supports fail-closed workspace drift handling.",
+      "provenance_ids": [
+        "prov_001"
+      ]
+    },
+    {
+      "edge_id": "edge_004",
+      "edge_type": "conflicts_with",
+      "source_node_id": "conf_001",
+      "target_node_id": "hyp_002",
+      "summary": "The unresolved conflict blocks treating the challenger as safe.",
+      "provenance_ids": [
+        "prov_002",
+        "prov_003"
+      ]
+    },
+    {
+      "edge_id": "edge_005",
+      "edge_type": "derived_from",
+      "source_node_id": "claim_001",
+      "target_node_id": "prov_001",
+      "summary": "The claim is derived from backend session inspection contract evidence.",
+      "provenance_ids": [
+        "prov_001"
+      ]
+    }
+  ]
+}

@@ -105,6 +105,13 @@ from .tools import (
     ToolRegistry,
     build_default_tool_registry,
 )
+from .ux_contracts import (
+    CliCommandSpec,
+    GraphExportArtifact,
+    UXReadModelBundle,
+    extract_crb_examples,
+    render_human_topic_summary,
+)
 
 __all__ = [
     "CanonicalGraphService",
@@ -119,9 +126,11 @@ __all__ = [
     "CodexRuntimeCoordinator",
     "CodexTransportTimeoutError",
     "CredentialLocatorError",
+    "CliCommandSpec",
     "ExecutionPolicyError",
     "FailureCode",
     "FrontierSelectionInput",
+    "GraphExportArtifact",
     "DeniedCallAuditLog",
     "HypothesisSnapshot",
     "DuplicateInteractiveTriggerError",
@@ -182,6 +191,7 @@ __all__ = [
     "ToolManifest",
     "ToolPolicyValidator",
     "ToolRegistry",
+    "UXReadModelBundle",
     "WorkerExecutionResult",
     "WorkspaceRootMismatchError",
     "build_default_tool_registry",
@@ -189,7 +199,9 @@ __all__ = [
     "competition_pressure_score",
     "credential_locator_for_principal",
     "derive_principal_fingerprint",
+    "extract_crb_examples",
     "neo4j_constraints",
+    "render_human_topic_summary",
     "resolve_credential_locator",
     "validate_credential_binding",
 ]
