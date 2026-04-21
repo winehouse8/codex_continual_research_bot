@@ -779,7 +779,62 @@ visualization은 그 상태를 읽기 쉽게 보여주는 projection이다.
 - graph artifact export 및 열람
 - failed/retry/dead-letter 상태 이해
 
-## 19. Final Recommendation
+
+## 19. Local Web Research UI Expansion
+
+CLI는 안정적인 operator surface지만, 긴 연구가 실제로 잘 진행되는지 파악하려면 한눈에 들어오는 visual dashboard가 필요하다.
+다음 product slice는 `localhost`에서 실행되는 read-only-first web UI다.
+
+### 19.1 Web UI Goal
+
+사용자는 브라우저에서 아래 질문에 30초 안에 답할 수 있어야 한다.
+
+1. 지금 연구 topic이 어디까지 진행됐는가?
+2. 현재 우세 가설과 challenger는 무엇인가?
+3. 어떤 evidence가 support / challenge 관계를 만들었는가?
+4. unresolved conflict, stale queue, dead-letter, stagnation risk가 있는가?
+5. 다음에 시스템이 무엇을 연구하려고 하는가?
+
+### 19.2 Primary UX Views
+
+최소 화면은 아래 네 가지다.
+
+- `Overview`: topic status, latest runs, queue health, dead-letter/stale claim warnings
+- `Hypothesis Board`: current best, challengers, confidence/status, support/challenge counts
+- `Graph Explorer`: evidence / claim / hypothesis / conflict / provenance network
+- `Run Timeline`: run events, validation/repair, graph writes, queued next actions
+
+### 19.3 Visualization Requirements
+
+Web UI는 graph export 파일을 단순히 열람하는 수준을 넘어 interactive exploration을 제공해야 한다.
+권장 방향은 graph-specific browser library를 사용하는 것이다.
+현재 후보는 `Cytoscape.js`다. 이유는 graph visualization/interaction에 특화되어 있고,
+node/edge style, filtering, layout, event handling을 직접 다루기 쉽기 때문이다.
+D3는 범용 visualization에는 강하지만 graph interaction을 제품 UX로 만들려면 더 많은 custom code가 필요하다.
+
+단, dependency가 UX를 지배하면 안 된다. backend authority와 export schema가 먼저이고,
+web library는 projection renderer다.
+
+### 19.4 Web UI Safety Rules
+
+- Web UI는 기본적으로 read-only다.
+- write action은 CLI/service boundary와 동일한 backend command를 호출해야 한다.
+- graph node를 드래그하거나 숨기는 행위는 backend state를 바꾸지 않는다.
+- visualization은 source of truth가 아니라 projection임을 화면에 명시한다.
+- conflict와 uncertainty는 숨기지 않는다.
+- dead-letter와 stale claimed queue는 정상 실행처럼 보이면 안 된다.
+
+### 19.5 Web UI Exit Criteria
+
+완료 기준:
+
+- `crb web serve` 또는 동등한 명령으로 localhost UI를 띄울 수 있다.
+- sample topic에서 Overview, Graph Explorer, Run Timeline을 볼 수 있다.
+- graph node click 시 evidence/provenance/detail panel이 열린다.
+- filter로 node type, edge type, run id, unresolved conflict를 좁힐 수 있다.
+- screenshot/golden HTML 또는 browser smoke test로 핵심 UX가 검증된다.
+
+## 20. Final Recommendation
 
 이 시스템은 `knowledge graph bot`이 아니라
 `research truth-maintenance system`으로 설계해야 한다.

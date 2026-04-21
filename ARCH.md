@@ -876,3 +876,73 @@ CLI는 실패를 숨기지 않고 상태를 분류해야 한다.
 - graph export determinism tests
 - malformed graph/read-model input rejection tests
 - no-direct-write boundary tests
+
+
+## 24. Localhost Web Research UI Architecture
+
+### 24.1 Architecture Goal
+
+Web UI는 CLI 위에 얹히는 visual read model이다.
+새로운 source of truth가 아니라 backend ledger, canonical graph, graph export projection, queue/run dashboards를 읽기 쉽게 보여준다.
+
+### 24.2 Proposed Modules
+
+```text
+src/codex_continual_research_bot/web_app.py
+src/codex_continual_research_bot/web_assets.py
+src/codex_continual_research_bot/web_view_models.py
+src/codex_continual_research_bot/web_api.py
+```
+
+책임:
+
+- `web_app.py`: localhost HTTP server, route registration, static file serving
+- `web_api.py`: JSON endpoints backed by existing CLI/backend services
+- `web_view_models.py`: overview, graph, run timeline, queue health view models
+- `web_assets.py`: embedded or vendored JS/CSS assets with version metadata
+
+### 24.3 Endpoint Shape
+
+```text
+GET /                       -> dashboard HTML
+GET /api/topics             -> topic list
+GET /api/topics/{id}        -> overview read model
+GET /api/topics/{id}/graph  -> graph projection JSON
+GET /api/topics/{id}/runs   -> run timeline
+GET /api/topics/{id}/queue  -> queue health / dead-letter / stale claimed
+```
+
+초기 구현은 Python stdlib HTTP server로 충분하다.
+write endpoint는 v1에서 생략하거나 explicit CLI-equivalent service command만 호출한다.
+
+### 24.4 Frontend Visualization
+
+권장 renderer: `Cytoscape.js` 기반 graph explorer.
+
+필수 interaction:
+
+- node/edge type 색상 구분
+- current best / challenger / evidence / conflict / provenance 필터
+- selected node detail panel
+- run/provenance filter
+- authority notice banner
+- empty/error state UX
+
+Cytoscape.js는 browser-side graph renderer이며, backend graph projection schema가 authority다.
+라이브러리 CDN 사용 시 offline fallback 또는 vendored asset option을 명시한다.
+
+### 24.5 Testing Strategy
+
+- web view model unit tests
+- endpoint JSON schema tests
+- HTML smoke test
+- graph payload size/empty-state tests
+- static asset availability test
+- screenshot or golden DOM snapshot for sample topic when feasible
+
+### 24.6 Operational Constraints
+
+- localhost bind 기본값은 `127.0.0.1`
+- port는 CLI option으로 지정
+- auth 없는 local UI이므로 remote bind는 기본 금지
+- generated graph artifact와 live DB view의 authority 차이를 표시
