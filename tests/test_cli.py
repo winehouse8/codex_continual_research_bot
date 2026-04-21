@@ -3,18 +3,32 @@ from __future__ import annotations
 import ast
 import json
 import shlex
+from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 
 from codex_continual_research_bot.cli import build_parser, main
 from codex_continual_research_bot.cli_backend import LocalBackendGateway
 from codex_continual_research_bot.cli_contracts import CliResult
-from codex_continual_research_bot.contracts import FailureCode
+from codex_continual_research_bot.contracts import (
+    BackendStateUpdateSummary,
+    FailureCode,
+    InteractiveRunStatus,
+    ProposalBundle,
+    RunReportViewModel,
+)
+from codex_continual_research_bot.graph_canonicalization import (
+    CanonicalGraphService,
+    CanonicalizationContext,
+    HypothesisSnapshot,
+)
 from codex_continual_research_bot.persistence import SQLitePersistenceLedger
 from codex_continual_research_bot.ux_contracts import extract_crb_examples
 
 
 ROOT = Path(__file__).resolve().parent.parent
+FIXTURES_DIR = ROOT / "fixtures"
+NOW = datetime(2026, 4, 21, 12, 0, tzinfo=timezone.utc)
 
 
 def run_cli(argv: list[str], backend: LocalBackendGateway) -> tuple[int, str, str]:
@@ -26,6 +40,104 @@ def run_cli(argv: list[str], backend: LocalBackendGateway) -> tuple[int, str, st
 
 def parsed_json(output: str) -> CliResult:
     return CliResult.model_validate(json.loads(output))
+
+
+def load_proposal() -> ProposalBundle:
+    return ProposalBundle.model_validate(
+        json.loads((FIXTURES_DIR / "proposal_bundle.json").read_text())
+    )
+
+
+def create_codex_auth_topic(backend: LocalBackendGateway) -> None:
+    run_cli(["init"], backend)
+    run_cli(
+        [
+            "topic",
+            "create",
+            "Codex auth boundary",
+            "--objective",
+            "Track session ownership risk",
+        ],
+        backend,
+    )
+
+
+def seed_graph_backed_memory(backend: LocalBackendGateway, db_path: Path) -> None:
+    _, output, _ = run_cli(
+        [
+            "run",
+            "start",
+            "topic_codex_auth_boundary",
+            "--input",
+            "counterargument: warning-only stale sessions may be safe",
+            "--json",
+        ],
+        backend,
+    )
+    started = parsed_json(output)
+    run_id = str(started.data["run_id"])
+    queue_item_id = str(started.data["queue_item_id"])
+
+    ledger = SQLitePersistenceLedger(db_path)
+    claimed = ledger.claim_queue_item_for_run(
+        queue_item_id=queue_item_id,
+        worker_id="worker-a",
+        run_id=run_id,
+        mode="interactive",
+        now=datetime.now(timezone.utc),
+    )
+    assert claimed is not None
+    queue_item = ledger.fetch_queue_item(queue_item_id)
+    assert queue_item is not None
+
+    canonical = CanonicalGraphService().canonicalize(
+        proposal=load_proposal(),
+        context=CanonicalizationContext(
+            topic_id="topic_codex_auth_boundary",
+            run_id=run_id,
+            proposal_id="proposal_001",
+            current_best_hypothesis_id="hyp_001",
+            existing_hypotheses=[
+                HypothesisSnapshot(
+                    hypothesis_id="hyp_001",
+                    title="Block scheduled run on session ambiguity",
+                    statement=(
+                        "A scheduled run must stop when principal or workspace "
+                        "inspection is ambiguous."
+                    ),
+                    version=2,
+                )
+            ],
+        ),
+    )
+    assert not canonical.quarantined
+    report = RunReportViewModel(
+        report_id="report_001",
+        run_id=run_id,
+        topic_id="topic_codex_auth_boundary",
+        trigger_id=queue_item_id,
+        idempotency_key=str(queue_item["idempotency_key"]),
+        snapshot_version=1,
+        status=InteractiveRunStatus.COMPLETED,
+        summary="Graph-backed memory was updated.",
+        proposal_digest="sha256:proposal",
+        backend_state_update=BackendStateUpdateSummary(
+            graph_digest=canonical.digest,
+            node_count=len(canonical.graph.nodes),
+            edge_count=len(canonical.graph.edges),
+            review_flags=[],
+        ),
+        operator_failure_summary=None,
+        created_at=NOW,
+    )
+    ledger.record_interactive_run_success(
+        report=report,
+        proposal_id="proposal_001",
+        graph_payload=canonical.graph.model_dump(mode="json"),
+        graph_digest=canonical.digest,
+        node_count=len(canonical.graph.nodes),
+        edge_count=len(canonical.graph.edges),
+    )
 
 
 def test_cli_help_lists_phase13_commands() -> None:
@@ -275,26 +387,89 @@ def test_json_result_schema_for_memory_and_ops(tmp_path: Path) -> None:
 
 def test_human_readable_output_snapshot(tmp_path: Path) -> None:
     backend = LocalBackendGateway(db_path=tmp_path / "crb.sqlite3", workspace_root=tmp_path)
-    run_cli(["init"], backend)
-    run_cli(
-        [
-            "topic",
-            "create",
-            "Codex auth boundary",
-            "--objective",
-            "Track session ownership risk",
-        ],
-        backend,
-    )
+    create_codex_auth_topic(backend)
 
     code, output, _ = run_cli(["memory", "hypotheses", "topic_codex_auth_boundary"], backend)
 
     assert code == 0
     assert output == (
         "Found 1 hypothesis view(s) for topic_codex_auth_boundary.\n"
+        "Memory source: topic_snapshot\n"
+        "No canonical graph write found; using topic snapshot fallback.\n"
+        "Graph export is not a source of truth; backend graph and provenance "
+        "ledgers remain authoritative.\n"
         "- current_best: Initial objective hypothesis "
-        "(hyp_codex_auth_boundary_current_best)\n"
+        "(hyp_codex_auth_boundary_current_best); support=0 challenge=0 conflict=0\n"
     )
+
+
+def test_memory_hypotheses_uses_graph_backed_projection_when_available(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "crb.sqlite3"
+    backend = LocalBackendGateway(db_path=db_path, workspace_root=tmp_path)
+    create_codex_auth_topic(backend)
+    seed_graph_backed_memory(backend, db_path)
+
+    code, output, _ = run_cli(
+        ["memory", "hypotheses", "topic_codex_auth_boundary", "--json"],
+        backend,
+    )
+    result = parsed_json(output)
+    hypotheses = result.data["hypotheses"]
+
+    assert code == 0
+    assert result.data["memory_source"] == "canonical_graph_write"
+    assert result.data["snapshot_projection_mismatch"] is True
+    assert any(
+        item["role"] == "challenger"
+        and item["title"] == "Allow warning-only stale session handling"
+        for item in hypotheses
+    )
+    assert any(
+        item["role"] == "current_best"
+        and item["title"] == "Block scheduled run on session ambiguity"
+        for item in hypotheses
+    )
+
+
+def test_memory_conflicts_exposes_challenge_candidates_without_active_conflicts(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "crb.sqlite3"
+    backend = LocalBackendGateway(db_path=db_path, workspace_root=tmp_path)
+    create_codex_auth_topic(backend)
+    seed_graph_backed_memory(backend, db_path)
+
+    code, output, _ = run_cli(
+        ["memory", "conflicts", "topic_codex_auth_boundary", "--json"],
+        backend,
+    )
+    result = parsed_json(output)
+
+    assert code == 0
+    assert result.data["conflicts"] == []
+    assert result.data["challenge_candidates"]
+    assert {
+        candidate["status"] for candidate in result.data["challenge_candidates"]
+    } == {"challenge_not_promoted_to_active_conflict"}
+
+
+def test_topic_show_uses_graph_memory_summary_when_snapshot_is_stale(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "crb.sqlite3"
+    backend = LocalBackendGateway(db_path=db_path, workspace_root=tmp_path)
+    create_codex_auth_topic(backend)
+    seed_graph_backed_memory(backend, db_path)
+
+    code, output, _ = run_cli(["topic", "show", "topic_codex_auth_boundary"], backend)
+
+    assert code == 0
+    assert "Memory source: canonical_graph_write" in output
+    assert "Latest canonical graph projection differs from the topic snapshot" in output
+    assert "Block scheduled run on session ambiguity" in output
+    assert "Allow warning-only stale session handling" in output
 
 
 def test_graph_export_and_view_commands_write_visualization_artifacts(tmp_path: Path) -> None:
