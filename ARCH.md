@@ -946,3 +946,27 @@ Cytoscape.js는 browser-side graph renderer이며, backend graph projection sche
 - port는 CLI option으로 지정
 - auth 없는 local UI이므로 remote bind는 기본 금지
 - generated graph artifact와 live DB view의 authority 차이를 표시
+
+### 24.7 Visual E2E Verification Boundary
+
+Web UI 변경은 unit test만으로 완료하지 않는다. 시각적 이해 가능성이 핵심이므로 Playwright E2E를 사용해 실제 browser rendering을 검증한다.
+
+필수 검증 surface:
+
+```text
+Overview tab screenshot
+Graph tab screenshot
+Runs tab screenshot
+Queue tab screenshot
+Memory tab screenshot
+```
+
+Playwright test는 최소 아래를 검증한다.
+
+- `Running now` 또는 동등한 실행 중 상태 카드가 존재한다.
+- queued/completed/dead-letter/stale counts가 분리되어 표시된다.
+- Graph tab에서 current best / challenger / evidence / provenance가 필터와 함께 보인다.
+- 실행 중인 run/queue item이 있을 경우 graph/timeline/detail panel에서 연결 정보를 찾을 수 있다.
+- 실행 중인 작업이 없을 경우 empty state가 명확하다.
+
+테스트 산출물은 PR/Linear handoff에서 screenshot path를 남긴다.

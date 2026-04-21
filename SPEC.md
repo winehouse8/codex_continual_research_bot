@@ -834,6 +834,21 @@ web library는 projection renderer다.
 - filter로 node type, edge type, run id, unresolved conflict를 좁힐 수 있다.
 - screenshot/golden HTML 또는 browser smoke test로 핵심 UX가 검증된다.
 
+### 19.6 Visual Run-State Comprehension Requirement
+
+Web UI는 사용자가 현재 연구가 실제로 실행 중인지, 대기 중인지, 멈췄는지 한눈에 알 수 있어야 한다. 단순히 총 queue 개수만 보여주면 안 된다.
+
+필수 표현:
+
+- 지금 실행 중인 run / claimed queue item 수
+- 대기 중인 queued item 수
+- completed / dead-letter / stale claimed 분리 표시
+- 현재 실행 중인 작업이 있으면 해당 queue item, run id, objective, latest event 표시
+- 실행 중인 작업이 graph의 어떤 hypothesis / evidence / conflict / next action과 연결되는지 표시
+- 아무 것도 실행 중이 아니면 `현재 실행 중인 연구 없음`을 명확하게 표시
+
+이 요구는 Playwright 기반 E2E와 주요 탭 screenshot으로 검증해야 한다.
+
 ## 20. Final Recommendation
 
 이 시스템은 `knowledge graph bot`이 아니라
