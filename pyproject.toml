@@ -17,6 +17,7 @@ crb = "codex_continual_research_bot.cli:main"
 [project.optional-dependencies]
 dev = [
   "pytest>=8.3,<9",
+  "playwright>=1.52,<2",
 ]
 
 [tool.pytest.ini_options]
