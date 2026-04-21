@@ -1,0 +1,48 @@
+{
+  "schema_id": "crb.iso26262_sample_research_demo.v1",
+  "purpose": "First research demo for checking that CLI output, graph artifacts, and the localhost web dashboard expose the same backend-owned research state.",
+  "topic": {
+    "title": "ISO 26262 safety case drift",
+    "objective": "Track whether ASIL decomposition evidence still supports the current safety case after a supplier tool qualification change.",
+    "topic_id": "topic_iso_26262_safety_case_drift"
+  },
+  "run": {
+    "input": "counterargument: supplier tool confidence may be stale after the latest qualification delta",
+    "expected_run_id": "run_5e3826f4ce35",
+    "expected_queue_item_id": "queue_5e3826f4ce35"
+  },
+  "commands": [
+    "crb init --json",
+    "crb doctor --json",
+    "crb topic create \"ISO 26262 safety case drift\" --objective \"Track whether ASIL decomposition evidence still supports the current safety case after a supplier tool qualification change.\" --json",
+    "crb run start topic_iso_26262_safety_case_drift --input \"counterargument: supplier tool confidence may be stale after the latest qualification delta\" --json",
+    "crb run status run_5e3826f4ce35 --json",
+    "crb queue list --topic topic_iso_26262_safety_case_drift --json",
+    "crb memory snapshot topic_iso_26262_safety_case_drift --json",
+    "crb memory hypotheses topic_iso_26262_safety_case_drift --json",
+    "crb graph export topic_iso_26262_safety_case_drift --scope latest --format json --output iso26262-graph.json --json",
+    "crb graph view topic_iso_26262_safety_case_drift --scope latest --format html --output iso26262-graph.html --json",
+    "crb web serve"
+  ],
+  "web_checks": [
+    "Open http://127.0.0.1:8765/dashboard.",
+    "Select topic_iso_26262_safety_case_drift.",
+    "Confirm Overview shows the current best hypothesis initialized from the objective.",
+    "Confirm Runs shows run_5e3826f4ce35 as a queue_request before a worker claims it.",
+    "Confirm Queue shows queue_5e3826f4ce35 and the same run id.",
+    "Confirm Memory and Graph retain the authority notice that projections are not a source of truth."
+  ],
+  "expected_artifacts": [
+    "iso26262-graph.json",
+    "iso26262-graph.html",
+    "fixtures/iso26262_web_dashboard_artifact.json",
+    "docs/phase-19-first-research-walkthrough.md",
+    "docs/phase-19-web-ux-audit.md"
+  ],
+  "failure_modes_attacked": [
+    "README command drift from actual CLI commands",
+    "CLI and web dashboard exposing different run or queue identifiers",
+    "web dashboard hiding that a run is queued but not yet claimed",
+    "authority notice or conflict visibility disappearing from first-user docs"
+  ]
+}

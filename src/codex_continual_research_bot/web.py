@@ -59,12 +59,26 @@ class ReadOnlyWebApi:
     def runs(self, topic_id: str) -> dict[str, object]:
         ledger = self._backend._initialized_ledger()
         runs = OperationalControlService(ledger).run_dashboard(topic_id=topic_id)
+        timeline_items = self._run_timeline_items(topic_id=topic_id, runs=runs)
         return {
             "schema_id": "crb.web.topic.runs.v1",
             "read_only": True,
             "authority_notice": READ_ONLY_NOTICE,
             "topic_id": topic_id,
             "runs": runs,
+            "timeline_items": timeline_items,
+        }
+
+    def run_timeline(self, run_id: str) -> dict[str, object]:
+        status = self._backend.run_status(run_id=run_id)
+        audit = self._backend.ops_audit(run_id=run_id)["audit"]
+        return {
+            "schema_id": "crb.web.run.timeline.v1",
+            "read_only": True,
+            "authority_notice": READ_ONLY_NOTICE,
+            "run_id": run_id,
+            "status": status,
+            "audit": audit,
         }
 
     def queue(self, topic_id: str) -> dict[str, object]:
@@ -111,6 +125,41 @@ class ReadOnlyWebApi:
             "memory": self.memory(topic_id)["memory"],
             "graph": self.graph(topic_id)["graph"],
         }
+
+    def _run_timeline_items(
+        self,
+        *,
+        topic_id: str,
+        runs: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        run_ids = {str(run["run_id"]) for run in runs}
+        ledger_items = [
+            {**run, "timeline_source": "run_ledger", "objective": None}
+            for run in runs
+        ]
+        queued_items = []
+        for item in self._backend.queue_list(topic_id=topic_id)["items"]:
+            requested_run_id = item.get("requested_run_id")
+            if not requested_run_id or str(requested_run_id) in run_ids:
+                continue
+            queued_items.append(
+                {
+                    "run_id": requested_run_id,
+                    "topic_id": item["topic_id"],
+                    "queue_item_id": item["queue_item_id"],
+                    "mode": item["kind"],
+                    "status": item["state"],
+                    "snapshot_version": None,
+                    "created_at": item["available_at"],
+                    "updated_at": item["available_at"],
+                    "queue_state": item["state"],
+                    "last_failure_code": item["failure"].get("failure_code"),
+                    "graph_digest": None,
+                    "timeline_source": "queue_request",
+                    "objective": item["objective"],
+                }
+            )
+        return ledger_items + queued_items
 
 
 class LocalWebRequestHandler(BaseHTTPRequestHandler):
@@ -194,6 +243,12 @@ class LocalWebRequestHandler(BaseHTTPRequestHandler):
             return self._api.topics()
         if len(parts) >= 3 and parts[:2] == ["api", "topics"]:
             return self._route_topic_api(parts[2], parts[3:])
+        if (
+            len(parts) == 5
+            and parts[:3] == ["api", "web", "runs"]
+            and parts[4] == "timeline"
+        ):
+            return self._api.run_timeline(parts[3])
         if len(parts) >= 4 and parts[:3] == ["api", "web", "topics"]:
             return self._route_topic_api(parts[3], parts[4:])
         raise KeyError(f"route {raw_path} does not exist")
