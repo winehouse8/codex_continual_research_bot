@@ -1,6 +1,11 @@
 const state = {
   topics: [],
   selectedTopicId: null,
+  graphScope: "latest",
+  graph: null,
+  graphFilters: new Map(),
+  selectedNodeId: null,
+  provenanceFilter: "all",
 };
 
 const el = (id) => document.getElementById(id);
@@ -90,7 +95,7 @@ function renderOverview(topicPayload) {
     empty(conflicts, "No active conflicts recorded.");
   } else {
     for (const conflict of active) {
-      conflicts.appendChild(card(conflict.conflict_id, conflict.summary, "severity-warning"));
+      conflicts.appendChild(card(conflict.title || conflict.conflict_id, conflict.summary, "severity-warning"));
     }
   }
   el("conflictCount").textContent = String(active.length);
@@ -152,6 +157,177 @@ function renderMemory(payload) {
   }
 }
 
+function bindGraphFilterControls(graph) {
+  const target = el("graphFilters");
+  target.innerHTML = "";
+  for (const filter of graph.filters) {
+    if (!state.graphFilters.has(filter.filter_id)) {
+      state.graphFilters.set(filter.filter_id, filter.enabled);
+    }
+    const label = document.createElement("label");
+    label.className = "filter-toggle";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = state.graphFilters.get(filter.filter_id);
+    input.addEventListener("change", () => {
+      state.graphFilters.set(filter.filter_id, input.checked);
+      renderGraphExplorer();
+    });
+    const span = document.createElement("span");
+    span.textContent = `${filter.label} ${filter.total_count}`;
+    label.append(input, span);
+    target.appendChild(label);
+  }
+}
+
+function renderProvenanceOptions(graph) {
+  const select = el("provenanceFilter");
+  select.innerHTML = "";
+  const all = document.createElement("option");
+  all.value = "all";
+  all.textContent = "All provenance";
+  select.appendChild(all);
+  for (const option of graph.provenance_options) {
+    const node = document.createElement("option");
+    node.value = option.provenance_id;
+    node.textContent = `${option.run_id} · ${option.label}`;
+    select.appendChild(node);
+  }
+  select.value = state.provenanceFilter;
+}
+
+function provenanceMatches(item) {
+  if (state.provenanceFilter === "all") {
+    return true;
+  }
+  return (
+    item.node_id === state.provenanceFilter ||
+    item.source_node_id === state.provenanceFilter ||
+    item.target_node_id === state.provenanceFilter ||
+    (item.provenance_ids || []).includes(state.provenanceFilter)
+  );
+}
+
+function selectedDetail(graph, selectedNodeId) {
+  const nodes = new Map(graph.nodes.map((node) => [node.node_id, node]));
+  const node = nodes.get(selectedNodeId);
+  if (!node) {
+    return null;
+  }
+  const relation = (edge) => ({
+    edge_id: edge.edge_id,
+    relation: edge.edge_type,
+    source_label: nodes.get(edge.source_node_id)?.label || edge.source_node_id,
+    target_label: nodes.get(edge.target_node_id)?.label || edge.target_node_id,
+    summary: edge.summary,
+  });
+  return {
+    ...node,
+    incoming_relations: graph.edges.filter((edge) => edge.target_node_id === node.node_id).map(relation),
+    outgoing_relations: graph.edges.filter((edge) => edge.source_node_id === node.node_id).map(relation),
+  };
+}
+
+function visibleGraph(baseGraph) {
+  const nodes = baseGraph.nodes.map((node) => {
+    const filterEnabled = !state.graphFilters.has(node.group) || state.graphFilters.get(node.group);
+    return { ...node, visible: node.visible && filterEnabled && provenanceMatches(node) };
+  });
+  const visibleNodeIds = new Set(nodes.filter((node) => node.visible).map((node) => node.node_id));
+  const edges = baseGraph.edges.map((edge) => ({
+    ...edge,
+    visible:
+      edge.visible &&
+      visibleNodeIds.has(edge.source_node_id) &&
+      visibleNodeIds.has(edge.target_node_id) &&
+      provenanceMatches(edge),
+  }));
+  const selectedNodeId =
+    state.selectedNodeId && visibleNodeIds.has(state.selectedNodeId)
+      ? state.selectedNodeId
+      : nodes.find((node) => node.visible)?.node_id || null;
+  return { ...baseGraph, nodes, edges, selected_node: selectedDetail({ ...baseGraph, edges }, selectedNodeId) };
+}
+
+function renderDetail(detail) {
+  el("detailTitle").textContent = detail?.label || "None";
+  el("detailSummary").textContent = detail?.summary || "No node selected.";
+  const meta = el("detailMeta");
+  meta.innerHTML = "";
+  if (!detail) {
+    el("detailRelations").innerHTML = "";
+    return;
+  }
+  const rows = [
+    ["Type", detail.node_type],
+    ["Role", detail.group],
+    ["Scope", detail.temporal_scope],
+    ["Provenance", detail.provenance_ids.length ? detail.provenance_ids.join(", ") : "None"],
+  ];
+  for (const [label, value] of rows) {
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const description = document.createElement("dd");
+    description.textContent = value;
+    meta.append(term, description);
+  }
+
+  const relations = el("detailRelations");
+  relations.innerHTML = "";
+  const allRelations = [...detail.incoming_relations, ...detail.outgoing_relations];
+  if (!allRelations.length) {
+    empty(relations, "No visible relations for this node.");
+    return;
+  }
+  for (const relation of allRelations) {
+    relations.appendChild(
+      row([
+        { label: "Relation", value: relation.relation },
+        { label: "From", value: relation.source_label },
+        { label: "To", value: relation.target_label },
+      ])
+    );
+  }
+}
+
+function renderGraphExplorer() {
+  if (!state.graph) {
+    empty(el("graphCanvas"), "No graph projection loaded.");
+    return;
+  }
+  const graph = visibleGraph(state.graph);
+  const visibleCount = graph.nodes.filter((node) => node.visible).length;
+  el("graphScopeLabel").textContent = state.graphScope;
+  el("graphState").textContent =
+    visibleCount > 0
+      ? `${visibleCount} visible nodes · ${graph.unresolved_conflict_count} unresolved conflicts`
+      : "Filtered graph is empty.";
+  renderDetail(graph.selected_node);
+  window.CRBGraphRenderer.renderGraph(el("graphCanvas"), graph, {
+    onSelect: (nodeId) => {
+      state.selectedNodeId = nodeId;
+      renderGraphExplorer();
+    },
+  });
+}
+
+async function loadGraph(scope = state.graphScope) {
+  if (!state.selectedTopicId) {
+    return;
+  }
+  state.graphScope = scope;
+  const topicId = encodeURIComponent(state.selectedTopicId);
+  const payload = await getJson(`/api/topics/${topicId}/graph/${scope}`);
+  state.graph = payload.graph;
+  state.selectedNodeId = state.graph.selected_node?.node_id || null;
+  bindGraphFilterControls(state.graph);
+  renderProvenanceOptions(state.graph);
+  for (const button of document.querySelectorAll("[data-scope]")) {
+    button.classList.toggle("active", button.dataset.scope === scope);
+  }
+  renderGraphExplorer();
+}
+
 async function loadSelectedTopic() {
   if (!state.selectedTopicId) {
     return;
@@ -168,6 +344,7 @@ async function loadSelectedTopic() {
   renderRuns(runs);
   renderQueue(queue);
   renderMemory(memory);
+  await loadGraph(state.graphScope);
 }
 
 async function loadTopics() {
@@ -196,12 +373,22 @@ function bindTabs() {
 
 el("topicSelect").addEventListener("change", async (event) => {
   state.selectedTopicId = event.target.value;
+  state.selectedNodeId = null;
+  state.provenanceFilter = "all";
   await loadSelectedTopic();
 });
 
 el("refreshButton").addEventListener("click", loadTopics);
+el("latestGraphButton").addEventListener("click", () => loadGraph("latest"));
+el("historyGraphButton").addEventListener("click", () => loadGraph("history"));
+el("provenanceFilter").addEventListener("change", (event) => {
+  state.provenanceFilter = event.target.value;
+  renderGraphExplorer();
+});
+
 bindTabs();
 loadTopics().catch((error) => {
   el("topicTitle").textContent = "Dashboard unavailable";
   el("topicSummary").textContent = error.message;
+  el("graphState").textContent = error.message;
 });

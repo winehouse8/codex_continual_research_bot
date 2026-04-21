@@ -79,6 +79,7 @@ def test_web_server_routes_smoke(tmp_path: Path) -> None:
         runs = fetch_json(server.base_url, "/api/topics/topic_codex_auth_boundary/runs")
         queue = fetch_json(server.base_url, "/api/topics/topic_codex_auth_boundary/queue")
         memory = fetch_json(server.base_url, "/api/topics/topic_codex_auth_boundary/memory")
+        graph = fetch_json(server.base_url, "/api/topics/topic_codex_auth_boundary/graph/latest")
 
     assert "Research Dashboard" in html
     assert topics["schema_id"] == "crb.web.topics.v1"
@@ -86,6 +87,8 @@ def test_web_server_routes_smoke(tmp_path: Path) -> None:
     assert runs["schema_id"] == "crb.web.topic.runs.v1"
     assert queue["schema_id"] == "crb.web.topic.queue.v1"
     assert memory["schema_id"] == "crb.web.topic.memory.v1"
+    assert graph["schema_id"] == "crb.web.topic.graph.v1"
+    assert graph["graph"]["scope"] == "latest"
 
 
 def test_web_api_json_response_schema(tmp_path: Path) -> None:
@@ -96,6 +99,10 @@ def test_web_api_json_response_schema(tmp_path: Path) -> None:
         dashboard = fetch_json(
             server.base_url,
             "/api/web/topics/topic_codex_auth_boundary/dashboard",
+        )
+        history = fetch_json(
+            server.base_url,
+            "/api/web/topics/topic_codex_auth_boundary/graph/history",
         )
 
     assert topics["read_only"] is True
@@ -108,7 +115,9 @@ def test_web_api_json_response_schema(tmp_path: Path) -> None:
     }
     assert dashboard["schema_id"] == "crb.web.topic.dashboard.v1"
     assert dashboard["read_only"] is True
-    assert {"topic", "runs", "queue", "memory"} <= set(dashboard)
+    assert {"topic", "runs", "queue", "memory", "graph"} <= set(dashboard)
+    assert history["graph"]["scope"] == "history"
+    assert history["graph"]["renderer"]["kind"] == "local_svg_graph_renderer"
 
 
 def test_web_server_default_bind_is_loopback(tmp_path: Path) -> None:
@@ -166,10 +175,15 @@ def test_html_shell_smoke(tmp_path: Path) -> None:
         html = fetch_text(server.base_url, "/dashboard")
         css = fetch_text(server.base_url, "/styles.css")
         js = fetch_text(server.base_url, "/app.js")
+        renderer = fetch_text(server.base_url, "/graph-renderer.js")
 
     assert 'id="topicSelect"' in html
+    assert 'id="graphCanvas"' in html
+    assert 'src="/graph-renderer.js"' in html
     assert 'id="runsList"' in html
     assert 'id="queueList"' in html
     assert 'id="memoryList"' in html
+    assert ".graph-canvas" in css
     assert ".summary-band" in css
-    assert "/api/topics" in js
+    assert "/graph/" in js
+    assert "CRBGraphRenderer" in renderer

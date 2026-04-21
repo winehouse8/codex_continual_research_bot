@@ -16,6 +16,7 @@ from urllib.parse import unquote, urlparse
 from codex_continual_research_bot.cli_backend import LocalBackendGateway
 from codex_continual_research_bot.cli_contracts import CliBackendError
 from codex_continual_research_bot.operational import OperationalControlService
+from codex_continual_research_bot.web_graph_explorer import build_graph_explorer_view
 
 
 DEFAULT_WEB_HOST = "127.0.0.1"
@@ -86,6 +87,18 @@ class ReadOnlyWebApi:
             "memory": data,
         }
 
+    def graph(self, topic_id: str, *, scope: str = "latest") -> dict[str, object]:
+        if scope not in {"latest", "history"}:
+            raise KeyError(f"graph scope {scope} does not exist")
+        artifact = self._backend.graph_artifact(topic_id=topic_id, scope=scope)
+        return {
+            "schema_id": "crb.web.topic.graph.v1",
+            "read_only": True,
+            "authority_notice": READ_ONLY_NOTICE,
+            "topic_id": topic_id,
+            "graph": build_graph_explorer_view(artifact, scope=scope),
+        }
+
     def dashboard(self, topic_id: str) -> dict[str, object]:
         return {
             "schema_id": "crb.web.topic.dashboard.v1",
@@ -96,6 +109,7 @@ class ReadOnlyWebApi:
             "runs": self.runs(topic_id)["runs"],
             "queue": self.queue(topic_id)["queue"],
             "memory": self.memory(topic_id)["memory"],
+            "graph": self.graph(topic_id)["graph"],
         }
 
 
@@ -193,6 +207,10 @@ class LocalWebRequestHandler(BaseHTTPRequestHandler):
             return self._api.queue(topic_id)
         if suffix == ["memory"]:
             return self._api.memory(topic_id)
+        if suffix == ["graph"]:
+            return self._api.graph(topic_id)
+        if len(suffix) == 2 and suffix[0] == "graph":
+            return self._api.graph(topic_id, scope=suffix[1])
         if suffix == ["dashboard"]:
             return self._api.dashboard(topic_id)
         raise KeyError(f"topic route /{topic_id}/{'/'.join(suffix)} does not exist")

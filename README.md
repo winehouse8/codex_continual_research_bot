@@ -160,6 +160,9 @@ Graph export와 HTML view는 backend-owned canonical graph 또는 topic snapshot
 | `graph.dot` | Graphviz 기반 리뷰 diff |
 | `graph.mmd` | Mermaid 기반 문서/이슈 공유 |
 | `graph.html` | 의존성 없는 로컬 inspection page |
+| `docs/graph-explorer-sample.html` | web graph explorer의 sample HTML snapshot artifact |
+
+web graph explorer는 packaged local SVG renderer를 사용합니다. 별도 CDN asset을 불러오지 않으며, current best, challenger, evidence, conflict, provenance node group과 challenge/conflict/provenance relation을 서로 다른 style class로 렌더링합니다. `Latest` / `History` toggle은 CLI의 `--scope latest` / `--scope history`와 같은 projection boundary를 사용합니다.
 
 ## Local Web Dashboard
 
@@ -178,8 +181,10 @@ crb web serve
 | topic runs | `GET /api/topics/{topic_id}/runs` |
 | topic queue | `GET /api/topics/{topic_id}/queue` |
 | topic memory | `GET /api/topics/{topic_id}/memory` |
+| topic graph latest | `GET /api/topics/{topic_id}/graph/latest` |
+| topic graph history | `GET /api/topics/{topic_id}/graph/history` |
 
-web surface는 topic 생성, run 시작, queue retry 같은 write 작업을 제공하지 않습니다. 모든 non-GET 요청은 `read_only_web_surface`로 거부되며, backend state, graph, queue, provenance ledger가 계속 authority입니다.
+web surface는 topic 생성, run 시작, queue retry 같은 write 작업을 제공하지 않습니다. 모든 non-GET 요청은 `read_only_web_surface`로 거부되며, backend state, graph, queue, provenance ledger가 계속 authority입니다. Graph tab은 current best / challenger / evidence / conflict / provenance filter, selected node detail panel, provenance selector, visual empty/error state를 제공합니다.
 
 ## Understanding The First Result
 
