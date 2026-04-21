@@ -1049,6 +1049,63 @@ Exit gate:
 
 - clean checkout에서 README를 따라 CLI로 sample topic을 만들고 localhost web UI에서 graph/timeline/memory 상태를 확인할 수 있어야 한다.
 
+
+## Phase 20. Visual Run-State Dashboard And Playwright UX Verification
+
+목적:
+사용자가 localhost Web UI에서 현재 연구가 실제로 돌고 있는지, 멈췄는지, 어떤 작업이 어떤 논리 그래프와 연결되는지 한눈에 파악할 수 있게 한다.
+
+Includes:
+
+- Overview의 running/queued/completed/dead-letter/stale count 분리
+- `Running now` 또는 동등한 현재 실행 상태 카드
+- 현재 실행 중 queue/run의 objective, run id, queue id, latest event 표시
+- 실행 중 작업과 hypothesis/evidence/conflict/next action graph relation 연결 표시
+- Graph tab의 current best / challenger / evidence / provenance / conflict 필터 가독성 개선
+- Runs/Queue/Memory tab에서 멈춤/대기/실패 상태가 명확히 드러나는 empty/error state
+- Playwright E2E test와 주요 탭 screenshot artifact
+
+Artifacts:
+
+- Web UI view model / API 확장
+- dashboard UI 개선
+- Playwright E2E test suite
+- screenshot artifacts for Overview / Graph / Runs / Queue / Memory
+- README 또는 docs의 Web UI 사용/판독 가이드 업데이트
+
+Depends on:
+
+- Phase 16
+- Phase 17
+- Phase 18
+- Phase 19
+
+Required tests:
+
+- Playwright E2E: localhost dashboard loads sample topic
+- Playwright E2E: Overview screenshot includes running/queued/completed/dead-letter/stale counts
+- Playwright E2E: Graph tab screenshot includes logical graph and selected node/detail panel
+- Playwright E2E: Runs tab screenshot shows current/empty execution state clearly
+- Playwright E2E: Queue tab screenshot separates queued, claimed/running, completed, dead-letter
+- Playwright E2E: Memory tab screenshot shows current best/challenger/conflict state
+- API/view model unit tests for running-now relation to queue/run/graph nodes
+- screenshot artifact paths recorded in Linear comment / PR handoff
+
+Failure modes:
+
+- 사용자가 `Queue 57`을 보고 57개 Codex session이 병렬 실행 중이라고 오해함
+- 실행 중 작업이 0개인지, queue 대기인지, dead-letter인지 구분하지 못함
+- 논리 구성도 graph와 현재 run/queue item의 연결이 UI에서 보이지 않음
+- graph는 예쁘지만 research status를 판단할 수 없음
+- screenshot 없이 DOM/unit test만 통과해 실제 UX가 검증되지 않음
+
+Exit gate:
+
+- 실제 sample DB 또는 fixture DB로 localhost Web UI를 띄우고, 주요 탭 screenshot을 남겨야 한다.
+- 사용자 관점에서 현재 실행 중인 작업 수와 작업 내용, 또는 멈춤 상태를 10초 안에 파악할 수 있어야 한다.
+- graph tab에서 현재 우세 가설, challenger, evidence/provenance, 관련 run/queue context를 확인할 수 있어야 한다.
+- Playwright E2E와 screenshot 검증이 통과해야 한다.
+
 ## 6. Cross-Phase Dependency Summary
 
 권장 구현 순서:
@@ -1073,6 +1130,7 @@ Exit gate:
 18. Phase 17: localhost web server / dashboard
 19. Phase 18: interactive graph explorer / visual research UX
 20. Phase 19: web UX final audit / first research demo
+21. Phase 20: visual run-state dashboard / Playwright UX verification
 
 이 순서를 바꾸면 생기는 대표 리스크:
 
@@ -1103,3 +1161,4 @@ Exit gate:
 - user-visible summary와 backend state update를 원자적으로 묶을 수 없는 구조적 결함이 발견됨
 - CLI/visualization이 backend authority를 우회하거나 source-of-truth처럼 오해될 수 있음
 - localhost web UI가 conflict/dead-letter/stale-claim 상태를 숨겨 운영자가 연구가 잘 되고 있다고 오해함
+- Web UI가 총 queue 수와 현재 실행 중 작업 수를 구분하지 못해 병렬 실행 상태를 오해하게 만듦
