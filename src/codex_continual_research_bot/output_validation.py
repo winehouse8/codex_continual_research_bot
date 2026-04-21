@@ -9,7 +9,11 @@ import re
 
 from pydantic import ValidationError
 
-from codex_continual_research_bot.contracts import ProposalBundle, RunExecutionRequest
+from codex_continual_research_bot.contracts import (
+    ProposalBundle,
+    RevisionAction,
+    RunExecutionRequest,
+)
 
 
 class ValidationLayer(str, Enum):
@@ -57,6 +61,42 @@ _CITATION_PLACEHOLDER_PATTERN = re.compile(
     r"\bTODO[_ -]?CITATION\b|<citation>)",
     re.IGNORECASE,
 )
+
+_TEMPORAL_SCOPE_RE = re.compile(
+    r"(\d{4}-\d{2}-\d{2}|\d{4}|\bonward\b|\bas of\b|\bcurrent\b|\bongoing\b)",
+    re.IGNORECASE,
+)
+
+PROPOSAL_BUNDLE_SAFETY_RULES = """\
+Validator-safe ProposalBundle rules:
+- Use canonical claim.temporal_scope values with an ISO date, a year, "as of ...",
+  "onward", "current", or "ongoing"; never use unknown, TBD, or vague scopes.
+- Declare every evidence_candidates[].artifact_id before any claim references it.
+- Declare every claims[].claim_id before any argument references it.
+- Every arguments[].claim_ids entry must point to an existing claim, and every
+  argument target_hypothesis_id must be either a current best hypothesis from
+  the snapshot or a challenger_hypotheses[].hypothesis_id in this proposal.
+- revision_proposals[].hypothesis_id must target a current best hypothesis or a
+  proposal challenger.
+- If revision_proposals[].action is "supersede", include
+  supersedes_hypothesis_id and point it at the existing hypothesis being
+  replaced. For non-supersede actions, leave supersedes_hypothesis_id null.
+- next_actions must preserve these same temporal scope, claim declaration,
+  argument reference, and revision action constraints for follow-up runs.
+"""
+
+PROPOSAL_BUNDLE_SAFETY_OBJECTIVE_CLAUSE = (
+    "Proposal safety: use canonical temporal_scope values; declare evidence-backed "
+    "claims before arguments; keep argument claim_ids and hypothesis targets in "
+    "contract; supersede actions require supersedes_hypothesis_id; next actions "
+    "must preserve these constraints."
+)
+
+
+def append_proposal_safety_clause(objective: str) -> str:
+    if PROPOSAL_BUNDLE_SAFETY_OBJECTIVE_CLAUSE in objective:
+        return objective
+    return f"{objective} {PROPOSAL_BUNDLE_SAFETY_OBJECTIVE_CLAUSE}"
 
 
 class ProposalValidator:
@@ -144,6 +184,18 @@ class ProposalValidator:
         claim_id_set = set(claim_ids)
 
         for index, claim in enumerate(proposal.claims):
+            if _TEMPORAL_SCOPE_RE.search(" ".join(claim.temporal_scope.split())) is None:
+                violations.append(
+                    ProposalValidationViolation(
+                        layer=ValidationLayer.SEMANTIC,
+                        location=f"claims[{index}].temporal_scope",
+                        message=(
+                            "temporal scope is not canonical enough for "
+                            "contradiction-safe storage"
+                        ),
+                        repairable=True,
+                    )
+                )
             missing = sorted(set(claim.artifact_ids) - evidence_id_set)
             if missing:
                 violations.append(
@@ -180,6 +232,21 @@ class ProposalValidator:
                 )
 
         for index, revision in enumerate(proposal.revision_proposals):
+            if (
+                revision.action == RevisionAction.SUPERSEDE
+                and revision.supersedes_hypothesis_id is None
+            ):
+                violations.append(
+                    ProposalValidationViolation(
+                        layer=ValidationLayer.SEMANTIC,
+                        location=f"revision_proposals[{index}].supersedes_hypothesis_id",
+                        message=(
+                            "supersede action requires supersedes_hypothesis_id "
+                            "pointing to the existing hypothesis being replaced"
+                        ),
+                        repairable=True,
+                    )
+                )
             if revision.hypothesis_id not in known_hypothesis_ids:
                 violations.append(
                     ProposalValidationViolation(
@@ -278,6 +345,7 @@ def build_minimal_repair_prompt(
     return (
         "Your previous final output failed validation.\n"
         "Return only corrected JSON. Do not add commentary.\n\n"
+        f"{PROPOSAL_BUNDLE_SAFETY_RULES}\n"
         "Violations:\n"
         f"{violation_lines}\n\n"
         "Previous final output:\n"

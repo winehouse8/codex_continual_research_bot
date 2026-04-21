@@ -93,9 +93,17 @@ This matrix defines the minimum validation evidence for the output validator, re
 | `test_happy_path_exec_ingestion_persists_events_and_artifacts` | validated proposal persistence artifacts | Valid runtime output is quarantined or misses validation evidence |
 | `test_malformed_json_proposal_is_repaired_before_validation` | syntax validator and minimal repair prompt path | Malformed JSON reaches persistence or fails without a bounded repair attempt |
 | `test_invalid_enum_and_missing_required_field_are_repaired` | schema validator and repair attempt orchestration | Enum drift or missing required fields bypass the repair loop |
+| `test_missing_supersedes_hypothesis_id_is_repaired_when_safe` | semantic repair for safe supersede predecessor insertion | Safe supersede proposal is quarantined instead of repaired |
 | `test_unresolved_citation_placeholder_is_rejected_and_quarantined` | policy validator and quarantine artifact | Placeholder citations reach graph-write candidates |
 | `test_hypothesis_id_inconsistency_is_rejected_and_quarantined` | semantic validator for hypothesis references | Proposal references a hypothesis outside the backend snapshot or challengers |
 | `test_repair_budget_exhausted_quarantines_invalid_output` | repair budget handling | The runtime loops indefinitely or drops invalid output without quarantine |
 | `test_compaction_artifact_preserves_referential_integrity` | `context.compacted` payload and retained artifact references | Compaction breaks evidence reference integrity |
 | `test_tool_result_omitted_after_compaction_is_rejected` | compaction-aware semantic validation | Proposal uses tool/artifact output omitted from compacted context |
 | `test_latest_compaction_retention_replaces_older_retention` | multiple `context.compacted` events during one run | Later compaction drops an artifact but older retention keeps the proposal passable |
+
+# DEE-80 Malformed Proposal Follow-Up Matrix
+
+| Test | Coverage | Failure guarded |
+| --- | --- | --- |
+| `test_queue_dead_letter_retry_flow_shows_failure_classification` | CLI grouping of malformed proposal dead letters by contract type | Operator cannot see which proposal contract repeatedly fails |
+| `test_scheduler_avoids_repeated_identical_malformed_follow_up` | scheduled follow-up suppression after identical malformed proposal dead letter | Scheduler keeps enqueueing the same malformed follow-up objective |

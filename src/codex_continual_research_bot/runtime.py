@@ -32,6 +32,7 @@ from codex_continual_research_bot.contracts import (
     RuntimeEventType,
 )
 from codex_continual_research_bot.output_validation import (
+    PROPOSAL_BUNDLE_SAFETY_RULES,
     ProposalValidationContext,
     ProposalValidationResult,
     ProposalValidationViolation,
@@ -273,6 +274,7 @@ class RuntimePromptBuilder:
             "Return only a JSON object that satisfies the configured output schema.\n"
             "The event stream is observed by the backend and must not be treated as "
             "the source of truth for graph writes.\n\n"
+            f"{PROPOSAL_BUNDLE_SAFETY_RULES}\n"
             "RunExecutionRequest:\n"
             f"{request_json}\n"
         )

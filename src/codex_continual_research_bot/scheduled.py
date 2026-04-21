@@ -37,6 +37,7 @@ from codex_continual_research_bot.orchestrator import (
     RunStateMachine,
     StaleTopicSnapshotError,
 )
+from codex_continual_research_bot.output_validation import append_proposal_safety_clause
 from codex_continual_research_bot.persistence import (
     DuplicateRunStartError,
     MalformedTopicSnapshotError,
@@ -199,6 +200,10 @@ class ScheduledRunService:
                         failure_code=FailureCode.EXECUTION_POLICY_REJECTED,
                     )
                 )
+                continue
+            repeated_failure = self._repeated_malformed_follow_up(selection)
+            if repeated_failure is not None:
+                decisions.append(repeated_failure)
                 continue
             decisions.append(self._enqueue_selection(selection, now=current_time))
         return decisions
@@ -378,7 +383,7 @@ class ScheduledRunService:
             f"scheduled.run:{selection.topic_id}:"
             f"{now.strftime('%Y%m%dT%H%M%SZ')}:v1"
         )
-        objective = (
+        objective = append_proposal_safety_clause(
             "Scheduled competition refresh for "
             f"{selection.topic_id}: {', '.join(selection.reasons)}"
         )
@@ -423,6 +428,37 @@ class ScheduledRunService:
             queue_item_id=queue_item_id,
             run_id=run_id,
         )
+
+    def _repeated_malformed_follow_up(
+        self,
+        selection: SchedulerSelection,
+    ) -> ScheduledEnqueueDecision | None:
+        objective = append_proposal_safety_clause(
+            "Scheduled competition refresh for "
+            f"{selection.topic_id}: {', '.join(selection.reasons)}"
+        )
+        for row in self._ledger.list_dead_letter_queue(topic_id=selection.topic_id):
+            if row.get("last_failure_code") != FailureCode.MALFORMED_PROPOSAL.value:
+                continue
+            try:
+                payload = json.loads(row["payload_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if payload.get("objective") != objective:
+                continue
+            return ScheduledEnqueueDecision(
+                topic_id=selection.topic_id,
+                action=ScheduledRunAction.DEFERRED,
+                reason=(
+                    "identical malformed_proposal follow-up already dead-lettered: "
+                    f"{row['id']}"
+                ),
+                selection=selection,
+                queue_item_id=str(row["id"]),
+                run_id=str(row["requested_run_id"]),
+                failure_code=FailureCode.MALFORMED_PROPOSAL,
+            )
+        return None
 
     def _trusted_runner_failure(
         self,
