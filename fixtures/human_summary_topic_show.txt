@@ -18,6 +18,12 @@ Run result:
 The current best hypothesis remains in force, but the next run should isolate session age from principal drift.
 Conflict delta: conf_001 remains unresolved and was escalated for the next frontier selection.
 
+Backend state update:
+- Required: yes
+- Applied: yes
+- Graph digest: sha256:graph-write-007
+- Review flags: unresolved_conflict_visible
+
 Queue:
 - queue_001 run.execute (queued): Attack the current best hypothesis with a warning-only stale-session challenger.
 

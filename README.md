@@ -11,6 +11,8 @@ implemented. The examples below are contract examples checked against
 `fixtures/cli_command_spec.json`.
 
 ```bash
+crb init --json
+crb doctor --json
 crb topic create "Codex auth boundary" --objective "Track session ownership risk" --json
 crb topic list --json
 crb topic show topic_codex_auth_boundary
@@ -30,8 +32,17 @@ crb queue dead-letter queue_001
 ```
 
 ```bash
-crb memory show topic_codex_auth_boundary --json
+crb memory snapshot topic_codex_auth_boundary --json
+crb memory conflicts topic_codex_auth_boundary --json
+crb memory hypotheses topic_codex_auth_boundary --json
 crb graph export topic_codex_auth_boundary --format json --output graph.json
+crb graph view topic_codex_auth_boundary --format html --output graph.html
+```
+
+```bash
+crb ops health --json
+crb ops audit run_2026_04_19_001 --json
+crb ops replay run_2026_04_19_001 --reason "operator replay audit" --json
 ```
 
 ## UX Guarantees

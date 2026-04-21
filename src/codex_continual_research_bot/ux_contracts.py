@@ -305,6 +305,30 @@ def render_human_topic_summary(bundle: UXReadModelBundle) -> str:
             run.summary,
             f"Conflict delta: {run.conflict_delta}",
             "",
+            "Backend state update:",
+            f"- Required: {'yes' if run.backend_state_update_required else 'no'}",
+            f"- Applied: {'yes' if run.backend_state_update_applied else 'no'}",
+        ]
+    )
+    if run.backend_state_update is not None:
+        lines.extend(
+            [
+                f"- Graph digest: {run.backend_state_update.graph_digest}",
+                (
+                    "- Review flags: "
+                    + (
+                        ", ".join(run.backend_state_update.review_flags)
+                        if run.backend_state_update.review_flags
+                        else "none"
+                    )
+                ),
+            ]
+        )
+    else:
+        lines.append("- Graph digest: none")
+    lines.extend(
+        [
+            "",
             "Queue:",
         ]
     )
@@ -368,6 +392,10 @@ def command_prefix(example: str) -> tuple[str, ...]:
     """Return the stable command prefix from a documented `crb` example."""
 
     tokens = shlex.split(example)
-    if len(tokens) < 3 or tokens[0] != "crb":
+    if len(tokens) < 2 or tokens[0] != "crb":
         raise ValueError(f"not a crb command example: {example}")
+    if tokens[1] in {"init", "doctor"}:
+        return tuple(tokens[:2])
+    if len(tokens) < 3:
+        raise ValueError(f"not a grouped crb command example: {example}")
     return tuple(tokens[:3])

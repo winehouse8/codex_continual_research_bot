@@ -8,12 +8,17 @@ not by executable command handlers.
 
 The CLI namespace is:
 
+- `init` / `doctor`: bootstrap and inspect operator configuration without
+  bypassing backend health checks.
 - `topic`: create, list, and inspect backend-owned topic state.
 - `run`: enqueue, resume, and inspect research runs.
 - `queue`: inspect and request backend-mediated queue actions.
 - `memory`: inspect backend-owned hypothesis, evidence, conflict, and provenance
-  memory.
-- `graph`: export visualization artifacts derived from backend graph state.
+  memory through snapshot, conflict, and hypothesis views.
+- `graph`: export and view visualization artifacts derived from backend graph
+  state.
+- `ops`: inspect backend health, audit trail, and replay requests through
+  backend-mediated workflows.
 
 The canonical command spec is `fixtures/cli_command_spec.json` and parses as
 `CliCommandSpec`.

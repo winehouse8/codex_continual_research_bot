@@ -47,6 +47,26 @@
       ]
     },
     {
+      "node_id": "ev_001",
+      "node_type": "evidence",
+      "label": "Workspace mismatch inspection evidence",
+      "summary": "Backend session inspection evidence shows workspace mismatch should block scheduled execution.",
+      "temporal_scope": "2026-04-19",
+      "provenance_ids": [
+        "prov_001"
+      ]
+    },
+    {
+      "node_id": "ev_002",
+      "node_type": "evidence",
+      "label": "Stale session retry challenger evidence",
+      "summary": "Operator input suggests stale but account-verified sessions might be safely retried.",
+      "temporal_scope": "2026-04-19",
+      "provenance_ids": [
+        "prov_003"
+      ]
+    },
+    {
       "node_id": "conf_001",
       "node_type": "conflict",
       "label": "Stale session versus identity drift",
@@ -97,6 +117,26 @@
     },
     {
       "edge_id": "edge_004",
+      "edge_type": "supports",
+      "source_node_id": "ev_001",
+      "target_node_id": "hyp_001",
+      "summary": "Workspace mismatch inspection evidence supports fail-closed handling.",
+      "provenance_ids": [
+        "prov_001"
+      ]
+    },
+    {
+      "edge_id": "edge_005",
+      "edge_type": "challenges",
+      "source_node_id": "ev_002",
+      "target_node_id": "hyp_001",
+      "summary": "Stale-session retry evidence challenges treating every freshness failure as terminal.",
+      "provenance_ids": [
+        "prov_003"
+      ]
+    },
+    {
+      "edge_id": "edge_006",
       "edge_type": "conflicts_with",
       "source_node_id": "conf_001",
       "target_node_id": "hyp_002",
@@ -107,7 +147,7 @@
       ]
     },
     {
-      "edge_id": "edge_005",
+      "edge_id": "edge_007",
       "edge_type": "derived_from",
       "source_node_id": "claim_001",
       "target_node_id": "prov_001",

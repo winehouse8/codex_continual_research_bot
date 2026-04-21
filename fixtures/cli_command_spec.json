@@ -2,6 +2,49 @@
   "schema_id": "crb.cli.command_spec.v1",
   "commands": [
     {
+      "command_id": "init",
+      "category": "ops",
+      "invocation": "crb init [--json]",
+      "summary": "Bootstrap local operator configuration and confirm backend connectivity without creating authoritative state directly.",
+      "reads": [
+        "local.operator_config",
+        "backend.health"
+      ],
+      "state_mutation": "none",
+      "authority_boundary": "Performs local preflight and backend health reads only; backend state creation remains owned by backend APIs.",
+      "output_modes": [
+        "human",
+        "json"
+      ],
+      "json_schema_id": "crb.ux.read_models.v1",
+      "human_summary_shape": "ops-init-summary.v1",
+      "examples": [
+        "crb init --json"
+      ]
+    },
+    {
+      "command_id": "doctor",
+      "category": "ops",
+      "invocation": "crb doctor [--json]",
+      "summary": "Inspect local configuration, backend reachability, and Codex session readiness for operator troubleshooting.",
+      "reads": [
+        "local.operator_config",
+        "backend.health",
+        "backend.session_ledger"
+      ],
+      "state_mutation": "none",
+      "authority_boundary": "Reads local and backend diagnostic state; it cannot repair backend rows, graph state, or provenance directly.",
+      "output_modes": [
+        "human",
+        "json"
+      ],
+      "json_schema_id": "crb.ux.read_models.v1",
+      "human_summary_shape": "ops-doctor-summary.v1",
+      "examples": [
+        "crb doctor --json"
+      ]
+    },
+    {
       "command_id": "topic.create",
       "category": "topic",
       "invocation": "crb topic create <title> --objective <objective> [--json]",
@@ -189,9 +232,9 @@
       ]
     },
     {
-      "command_id": "memory.show",
+      "command_id": "memory.snapshot",
       "category": "memory",
-      "invocation": "crb memory show <topic-id> [--json]",
+      "invocation": "crb memory snapshot <topic-id> [--json]",
       "summary": "Show hypothesis, evidence, conflict, and provenance counts for the backend-owned memory state.",
       "reads": [
         "backend.memory_digest",
@@ -206,7 +249,51 @@
       "json_schema_id": "crb.ux.read_models.v1",
       "human_summary_shape": "memory-summary.v1",
       "examples": [
-        "crb memory show topic_codex_auth_boundary --json"
+        "crb memory snapshot topic_codex_auth_boundary --json"
+      ]
+    },
+    {
+      "command_id": "memory.conflicts",
+      "category": "memory",
+      "invocation": "crb memory conflicts <topic-id> [--json]",
+      "summary": "List active and recently adjudicated conflicts while preserving unresolved tension for the operator.",
+      "reads": [
+        "backend.memory_digest",
+        "backend.conflict_index",
+        "backend.provenance_digest"
+      ],
+      "state_mutation": "none",
+      "authority_boundary": "Reads backend conflict projections only; conflict reconciliation remains a backend revision decision.",
+      "output_modes": [
+        "human",
+        "json"
+      ],
+      "json_schema_id": "crb.ux.read_models.v1",
+      "human_summary_shape": "memory-conflicts.v1",
+      "examples": [
+        "crb memory conflicts topic_codex_auth_boundary --json"
+      ]
+    },
+    {
+      "command_id": "memory.hypotheses",
+      "category": "memory",
+      "invocation": "crb memory hypotheses <topic-id> [--json]",
+      "summary": "List current best and challenger hypotheses with confidence, uncertainty, and provenance hints.",
+      "reads": [
+        "backend.memory_digest",
+        "backend.hypothesis_index",
+        "backend.provenance_digest"
+      ],
+      "state_mutation": "none",
+      "authority_boundary": "Reads backend hypothesis projections only; hypothesis strengthening, weakening, retirement, and supersession remain backend revision decisions.",
+      "output_modes": [
+        "human",
+        "json"
+      ],
+      "json_schema_id": "crb.ux.read_models.v1",
+      "human_summary_shape": "memory-hypotheses.v1",
+      "examples": [
+        "crb memory hypotheses topic_codex_auth_boundary --json"
       ]
     },
     {
@@ -227,6 +314,94 @@
       "human_summary_shape": null,
       "examples": [
         "crb graph export topic_codex_auth_boundary --format json --output graph.json"
+      ]
+    },
+    {
+      "command_id": "graph.view",
+      "category": "graph",
+      "invocation": "crb graph view <topic-id> --format <html|mermaid|dot> [--output <path>]",
+      "summary": "Create a lightweight visualization artifact for inspecting the backend graph projection.",
+      "reads": [
+        "backend.graph_projection",
+        "backend.provenance_digest"
+      ],
+      "state_mutation": "none",
+      "authority_boundary": "Reads backend graph projection; generated visualizations cannot mutate canonical graph or provenance ledgers.",
+      "output_modes": [
+        "human",
+        "json"
+      ],
+      "json_schema_id": "crb.graph_export.v1",
+      "human_summary_shape": "graph-view-summary.v1",
+      "examples": [
+        "crb graph view topic_codex_auth_boundary --format html --output graph.html"
+      ]
+    },
+    {
+      "command_id": "ops.health",
+      "category": "ops",
+      "invocation": "crb ops health [--json]",
+      "summary": "Show backend, queue, scheduler, and Codex session health for operator readiness checks.",
+      "reads": [
+        "backend.health",
+        "backend.queue_state",
+        "backend.session_ledger"
+      ],
+      "state_mutation": "none",
+      "authority_boundary": "Reads backend operational state; health output is diagnostic and not authoritative persistence.",
+      "output_modes": [
+        "human",
+        "json"
+      ],
+      "json_schema_id": "crb.ux.read_models.v1",
+      "human_summary_shape": "ops-health-summary.v1",
+      "examples": [
+        "crb ops health --json"
+      ]
+    },
+    {
+      "command_id": "ops.audit",
+      "category": "ops",
+      "invocation": "crb ops audit <run-id> [--json]",
+      "summary": "Show run audit trail, state transitions, queue attempts, and graph write ledger references.",
+      "reads": [
+        "backend.run_ledger",
+        "backend.run_events",
+        "backend.operation_audit",
+        "backend.graph_write_ledger"
+      ],
+      "state_mutation": "none",
+      "authority_boundary": "Reads backend audit ledgers; audit output cannot rewrite run, queue, graph, or provenance state.",
+      "output_modes": [
+        "human",
+        "json"
+      ],
+      "json_schema_id": "crb.ux.read_models.v1",
+      "human_summary_shape": "ops-audit-summary.v1",
+      "examples": [
+        "crb ops audit run_2026_04_19_001 --json"
+      ]
+    },
+    {
+      "command_id": "ops.replay",
+      "category": "ops",
+      "invocation": "crb ops replay <run-id> --reason <reason> [--json]",
+      "summary": "Request a backend-mediated replay or repair job using existing idempotency and audit policy.",
+      "reads": [
+        "backend.run_ledger",
+        "backend.operation_audit",
+        "backend.queue_state"
+      ],
+      "state_mutation": "enqueue_repair_job",
+      "authority_boundary": "Routes through backend replay policy and queue APIs; the CLI cannot rewrite run, queue, graph, or provenance ledgers directly.",
+      "output_modes": [
+        "human",
+        "json"
+      ],
+      "json_schema_id": "crb.ux.read_models.v1",
+      "human_summary_shape": "ops-replay-summary.v1",
+      "examples": [
+        "crb ops replay run_2026_04_19_001 --reason \"operator replay audit\" --json"
       ]
     }
   ],

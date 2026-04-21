@@ -71,8 +71,8 @@
     "backend_state_update_applied": true,
     "backend_state_update": {
       "graph_digest": "sha256:graph-write-007",
-      "node_count": 6,
-      "edge_count": 5,
+      "node_count": 8,
+      "edge_count": 7,
       "review_flags": [
         "unresolved_conflict_visible"
       ]
