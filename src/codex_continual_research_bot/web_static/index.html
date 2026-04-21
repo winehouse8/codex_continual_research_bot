@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CRB Dashboard</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Continual Research Bot</p>
+        <h1>Research Dashboard</h1>
+      </div>
+      <div class="toolbar" aria-label="Dashboard controls">
+        <select id="topicSelect" aria-label="Topic"></select>
+        <button id="refreshButton" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="notice" id="authorityNotice">
+        Dashboard projections are not a source of truth; backend state, graph,
+        queue, and provenance ledgers remain authoritative.
+      </section>
+
+      <section class="summary-band" aria-labelledby="topicTitle">
+        <div>
+          <p class="label">Topic</p>
+          <h2 id="topicTitle">No topic loaded</h2>
+          <p id="topicSummary" class="lede">Initialize a local CRB database to inspect state.</p>
+        </div>
+        <div class="metric-strip" aria-label="Topic metrics">
+          <div>
+            <span id="runCount">0</span>
+            <p>Runs</p>
+          </div>
+          <div>
+            <span id="queueCount">0</span>
+            <p>Queue</p>
+          </div>
+          <div>
+            <span id="conflictCount">0</span>
+            <p>Conflicts</p>
+          </div>
+        </div>
+      </section>
+
+      <nav class="tabs" aria-label="Dashboard views">
+        <button class="tab active" type="button" data-view="overview">Overview</button>
+        <button class="tab" type="button" data-view="graph">Graph</button>
+        <button class="tab" type="button" data-view="runs">Runs</button>
+        <button class="tab" type="button" data-view="queue">Queue</button>
+        <button class="tab" type="button" data-view="memory">Memory</button>
+      </nav>
+
+      <section id="overview" class="view active" aria-label="Overview">
+        <div class="section-heading">
+          <h3>Current Best</h3>
+          <span id="snapshotVersion" class="pill">v0</span>
+        </div>
+        <div id="hypotheses" class="card-grid"></div>
+        <div class="section-heading">
+          <h3>Active Conflicts</h3>
+        </div>
+        <div id="conflicts" class="card-grid"></div>
+      </section>
+
+      <section id="graph" class="view" aria-label="Graph explorer">
+        <div class="section-heading">
+          <h3>Graph Explorer</h3>
+          <span id="graphScopeLabel" class="pill">latest</span>
+        </div>
+        <div class="graph-toolbar" aria-label="Graph controls">
+          <div class="segmented" aria-label="Graph scope">
+            <button id="latestGraphButton" class="active" type="button" data-scope="latest">Latest</button>
+            <button id="historyGraphButton" type="button" data-scope="history">History</button>
+          </div>
+          <select id="provenanceFilter" aria-label="Run or provenance filter">
+            <option value="all">All provenance</option>
+          </select>
+        </div>
+        <div id="graphFilters" class="filter-strip" aria-label="Graph filters"></div>
+        <div class="graph-layout">
+          <div id="graphCanvas" class="graph-canvas" role="img" aria-label="Research graph projection"></div>
+          <aside class="detail-panel" aria-labelledby="detailTitle">
+            <p class="label">Selected node</p>
+            <h4 id="detailTitle">None</h4>
+            <p id="detailSummary"></p>
+            <dl id="detailMeta"></dl>
+            <div id="detailRelations" class="relation-list"></div>
+          </aside>
+        </div>
+        <div id="graphState" class="state-line" role="status"></div>
+      </section>
+
+      <section id="runs" class="view" aria-label="Runs">
+        <div class="section-heading">
+          <h3>Run Timeline</h3>
+        </div>
+        <div id="runsList" class="table-list"></div>
+      </section>
+
+      <section id="queue" class="view" aria-label="Queue">
+        <div class="section-heading">
+          <h3>Queue State</h3>
+        </div>
+        <div id="queueList" class="table-list"></div>
+      </section>
+
+      <section id="memory" class="view" aria-label="Memory">
+        <div class="section-heading">
+          <h3>Memory Projection</h3>
+          <span id="graphDigest" class="pill">none</span>
+        </div>
+        <div id="memoryList" class="card-grid"></div>
+      </section>
+    </main>
+
+    <script src="/graph-renderer.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

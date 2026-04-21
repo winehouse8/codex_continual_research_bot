@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Graph Explorer Sample</title>
+    <style>
+      body {
+        color: #1f2723;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 2rem;
+      }
+      #graphCanvas {
+        border: 1px solid #d9ded6;
+        border-radius: 8px;
+        display: grid;
+        gap: 1rem;
+        grid-template-columns: repeat(5, minmax(130px, 1fr));
+        padding: 1rem;
+      }
+      article {
+        border: 2px solid #64706a;
+        border-radius: 8px;
+        min-height: 112px;
+        padding: 0.75rem;
+      }
+      .current-best {
+        border-color: #2f6f4e;
+      }
+      .challenger {
+        border-color: #a56818;
+      }
+      .evidence {
+        border-color: #235c8f;
+      }
+      .conflict {
+        border-color: #9b2f32;
+      }
+      .provenance {
+        border-color: #6b4da1;
+      }
+      p {
+        color: #64706a;
+        line-height: 1.45;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Graph Explorer Sample</h1>
+    <p>Visualization projection only; backend graph and provenance ledgers remain authoritative.</p>
+    <main id="graphCanvas">
+      <article class="current-best">
+        <h2>current best</h2>
+        <p>Fail closed on workspace drift</p>
+      </article>
+      <article class="challenger">
+        <h2>challenger</h2>
+        <p>Warning-only stale session path</p>
+      </article>
+      <article class="evidence">
+        <h2>evidence</h2>
+        <p>Workspace mismatch inspection evidence</p>
+      </article>
+      <article class="conflict">
+        <h2>conflict</h2>
+        <p>Stale session versus identity drift</p>
+      </article>
+      <article class="provenance">
+        <h2>provenance</h2>
+        <p>Session inspection fixture</p>
+      </article>
+    </main>
+  </body>
+</html>

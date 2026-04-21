@@ -1,0 +1,48 @@
+{
+  "schema_id": "crb.phase19.sample_graph_dashboard_artifact.v1",
+  "topic_id": "topic_iso_26262_safety_case_drift",
+  "run_id": "run_5e3826f4ce35",
+  "queue_item_id": "queue_5e3826f4ce35",
+  "dashboard_url": "http://127.0.0.1:8765/dashboard",
+  "authority_notice": "Local web dashboard is read-only; backend state, graph, queue, and provenance ledgers remain authoritative.",
+  "expected_views": [
+    {
+      "view": "Overview",
+      "operator_question": "What is the current best hypothesis for the ISO 26262 topic?",
+      "expected_signal": "The topic objective appears as the initialized current best hypothesis until a validated proposal updates backend memory."
+    },
+    {
+      "view": "Runs",
+      "operator_question": "Was the first research request accepted by backend state?",
+      "expected_signal": "run_5e3826f4ce35 is visible as a queue_request before a worker claims or completes it."
+    },
+    {
+      "view": "Queue",
+      "operator_question": "What backend work item should be processed next?",
+      "expected_signal": "queue_5e3826f4ce35 references the same requested run id as CLI `run start`."
+    },
+    {
+      "view": "Memory",
+      "operator_question": "Is the dashboard treating memory as backend-owned projection state?",
+      "expected_signal": "Memory counts are projections and the authority notice remains visible."
+    },
+    {
+      "view": "Graph",
+      "operator_question": "Can a first user inspect the graph projection without mistaking it for source of truth?",
+      "expected_signal": "Graph state, filters, and selected-node details render with the not-a-source-of-truth notice."
+    }
+  ],
+  "visual_qa_checklist": [
+    "Authority notice is visible above topic state.",
+    "Conflict count is visible even when zero; active conflicts are not hidden when present.",
+    "Runs tab distinguishes queued run requests from run ledger entries.",
+    "Graph tab keeps current best, challenger, evidence, conflict, and provenance filters available.",
+    "Empty states explain missing backend state without inventing conclusions."
+  ],
+  "sanity_links": [
+    "README.md#local-web-dashboard",
+    "README.md#web-quickstart-and-first-research-demo",
+    "docs/phase-19-first-research-walkthrough.md",
+    "docs/phase-19-web-ux-audit.md"
+  ]
+}
