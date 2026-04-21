@@ -56,6 +56,8 @@ crb memory snapshot topic_codex_auth_boundary --json
 crb memory conflicts topic_codex_auth_boundary --json
 crb memory hypotheses topic_codex_auth_boundary --json
 crb graph export topic_codex_auth_boundary --format json --output graph.json
+crb graph export topic_codex_auth_boundary --format dot --output graph.dot
+crb graph export topic_codex_auth_boundary --format mermaid --output graph.mmd
 crb graph view topic_codex_auth_boundary --format html --output graph.html
 ```
 
@@ -80,3 +82,24 @@ crb ops replay "<completed-run-id>" --reason "operator replay audit" --json
 - Graph exports are visualization artifacts, not a source of truth.
 
 The detailed contract is in `docs/cli-ux-contract.md`.
+
+## Graph Visualization
+
+Phase 14 graph artifacts are generated from the latest backend-owned canonical
+graph write when one exists, with the latest topic snapshot used as a fallback
+projection. Exports preserve deterministic node and edge ordering so JSON, DOT,
+and Mermaid output can be diffed during replay or review.
+
+Supported artifact formats:
+
+```bash
+crb graph export topic_codex_auth_boundary --format json --output graph.json
+crb graph export topic_codex_auth_boundary --format dot --output graph.dot
+crb graph export topic_codex_auth_boundary --format mermaid --output graph.mmd
+crb graph view topic_codex_auth_boundary --format html --output graph.html
+```
+
+The JSON export includes a `memory_explorer` section that groups current-best
+hypotheses, challengers, evidence, conflicts, and provenance nodes. The HTML
+view is intentionally lightweight and dependency-free; it is an inspection
+artifact only, while backend graph and provenance ledgers remain authoritative.

@@ -63,4 +63,7 @@ JSON output uses `fixtures/ux_read_models.json`, which parses as
 `fixtures/graph_export.json` is a visualization artifact contract, parsed as
 `GraphExportArtifact`. It must include an authority notice saying that the export
 is not a source of truth and that backend graph/provenance ledgers remain
-authoritative.
+authoritative. JSON exports include a `memory_explorer` grouping for current
+best hypotheses, challengers, evidence, conflicts, and provenance. DOT and
+Mermaid exports use the same deterministic graph projection so review diffs do
+not depend on database row order.

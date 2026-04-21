@@ -122,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     graph_sub = graph.add_subparsers(dest="action", required=True)
     graph_export = _add_leaf(graph_sub, "export", "Export a graph visualization artifact.", "graph.export")
     graph_export.add_argument("topic_id")
-    graph_export.add_argument("--format", choices=("json",), default="json")
+    graph_export.add_argument("--format", choices=("json", "dot", "mermaid"), default="json")
     graph_export.add_argument("--output", required=True)
     graph_view = _add_leaf(graph_sub, "view", "Render a graph visualization artifact.", "graph.view")
     graph_view.add_argument("topic_id")
