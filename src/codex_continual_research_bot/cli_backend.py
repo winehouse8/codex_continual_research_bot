@@ -26,8 +26,10 @@ from codex_continual_research_bot.failure_analysis import (
     summarize_malformed_proposal_failures,
 )
 from codex_continual_research_bot.operational import (
+    DEFAULT_STALE_CLAIM_SECONDS,
     OperationalControlError,
     OperationalControlService,
+    StaleClaimRecoveryRejectedError,
 )
 from codex_continual_research_bot.output_validation import append_proposal_safety_clause
 from codex_continual_research_bot.graph_visualization import (
@@ -197,22 +199,55 @@ class LocalBackendGateway:
         }
 
     def topic_show(self, *, topic_id: str) -> dict[str, object]:
-        snapshot = self._snapshot(topic_id)
+        snapshot, graph, artifact = self._memory_projection(topic_id)
         queue = self._queue_items(topic_id=topic_id)
+        hypotheses = self._hypothesis_views(artifact)
+        conflicts = self._conflict_views(artifact)
+        challenge_candidates = self._challenge_candidate_views(artifact)
+        projection_notice = self._projection_notice(
+            snapshot=snapshot,
+            graph=graph,
+            artifact=artifact,
+        )
         human = [
             f"Topic: {topic_id}",
             f"Snapshot: v{snapshot.snapshot_version}",
+            f"Memory source: {artifact.projection_source}",
+            projection_notice,
+            artifact.authority_notice,
             "Current best hypotheses:",
-            *[f"- {item.title}: {item.summary}" for item in snapshot.current_best_hypotheses],
+            *(
+                [
+                    f"- {item['title']}: {item['summary']}"
+                    for item in hypotheses
+                    if item["role"] == "current_best"
+                ]
+                or ["- None projected."]
+            ),
             "Challenger targets:",
             *(
-                [f"- {item.title}: {item.summary}" for item in snapshot.challenger_targets]
+                [
+                    f"- {item['title']}: {item['summary']}"
+                    for item in hypotheses
+                    if item["role"] == "challenger"
+                ]
                 or ["- None selected yet."]
             ),
             "Active conflicts:",
             *(
-                [f"- {item.conflict_id}: {item.summary}" for item in snapshot.active_conflicts]
+                [f"- {item['conflict_id']}: {item['summary']}" for item in conflicts]
                 or ["- None recorded."]
+            ),
+            "Challenge candidates:",
+            *(
+                [
+                    (
+                        f"- {item['source_label']} challenges {item['target_label']}: "
+                        f"{item['summary']}"
+                    )
+                    for item in challenge_candidates
+                ]
+                or ["- None projected."]
             ),
             "Queue:",
             *(
@@ -227,6 +262,23 @@ class LocalBackendGateway:
         return {
             "summary": f"Loaded topic {topic_id}.",
             "topic": snapshot.model_dump(mode="json"),
+            "memory_source": artifact.projection_source,
+            "graph_digest": artifact.graph_digest,
+            "authority_notice": artifact.authority_notice,
+            "snapshot_projection_mismatch": self._snapshot_projection_mismatch(
+                snapshot=snapshot,
+                artifact=artifact,
+            ),
+            "projected_memory": {
+                "current_best_hypotheses": [
+                    item for item in hypotheses if item["role"] == "current_best"
+                ],
+                "challenger_targets": [
+                    item for item in hypotheses if item["role"] == "challenger"
+                ],
+                "active_conflicts": conflicts,
+                "challenge_candidates": challenge_candidates,
+            },
             "queue": [self._queue_view(row) for row in queue],
             "human": human,
         }
@@ -324,34 +376,78 @@ class LocalBackendGateway:
 
     def queue_list(self, *, topic_id: str | None) -> dict[str, object]:
         rows = self._queue_items(topic_id=topic_id)
-        items = [self._queue_view(row) for row in rows]
+        claims = {
+            claim["queue_item_id"]: claim
+            for claim in OperationalControlService(
+                self._initialized_ledger()
+            ).list_claimed_queue_items(topic_id=topic_id)
+        }
+        items = [self._queue_view(row, claim=claims.get(row["id"])) for row in rows]
         retryable = sum(1 for item in items if item["failure"].get("retryable") is True)
         human_review = sum(
             1 for item in items if item["failure"].get("human_review_required") is True
         )
+        stale_claimed = [item for item in items if item["claim"].get("stale") is True]
         return {
             "summary": f"Found {len(items)} queue item(s).",
             "topic_id": topic_id,
             "items": items,
             "retryable_failure_count": retryable,
             "human_review_failure_count": human_review,
-            "malformed_proposal_failure_summary": summarize_malformed_proposal_failures(
-                rows
-            ),
+            "malformed_proposal_failure_summary": summarize_malformed_proposal_failures(rows),
+            "stale_claimed_count": len(stale_claimed),
+            "stale_claimed": stale_claimed,
             "human": [
-                (
-                    f"- {item['queue_item_id']} {item['kind']} ({item['state']}): "
-                    f"retryable={item['failure'].get('retryable', False)} "
-                    f"human_review={item['failure'].get('human_review_required', False)}"
-                    f"{_failure_type_suffix(item['failure'])}"
-                )
+                self._queue_human_line(item) + _failure_type_suffix(item["failure"])
                 for item in items
             ]
             or ["No queue items found."],
         }
 
     def queue_retry(self, *, queue_item_id: str, reason: str) -> dict[str, object]:
-        service = OperationalControlService(self._initialized_ledger())
+        ledger = self._initialized_ledger()
+        row = ledger.fetch_queue_item(queue_item_id)
+        if row is None:
+            raise CliBackendError(
+                failure_code="queue_item_not_found",
+                detail=f"queue item {queue_item_id} does not exist",
+                retryable=False,
+                human_review_required=False,
+            )
+        service = OperationalControlService(ledger)
+        if row["state"] == QueueJobState.CLAIMED.value:
+            try:
+                recovery = service.recover_stale_claimed_item(
+                    queue_item_id=queue_item_id,
+                    actor="cli",
+                    reason=reason,
+                    action="retry",
+                    now=_utcnow(),
+                )
+            except (KeyError, StaleClaimRecoveryRejectedError) as exc:
+                raise CliBackendError(
+                    failure_code="queue_retry_rejected",
+                    detail=str(exc),
+                    retryable=False,
+                    human_review_required=True,
+                ) from exc
+            item = ledger.fetch_queue_item(queue_item_id)
+            return {
+                "summary": f"Recovered stale claimed queue item {queue_item_id}.",
+                "queue_item_id": queue_item_id,
+                "queue": None if item is None else self._queue_view(item),
+                "recovery": {
+                    "action": recovery.action,
+                    "state": recovery.state,
+                    "idempotent": recovery.idempotent,
+                    "audit_event_id": recovery.audit_event_id,
+                },
+                "human": [
+                    f"Queue item: {queue_item_id}",
+                    "State: queued",
+                    f"Reason: {reason}",
+                ],
+            }
         try:
             service.recover_dead_letter(
                 queue_item_id=queue_item_id,
@@ -374,6 +470,49 @@ class LocalBackendGateway:
             "human": [
                 f"Queue item: {queue_item_id}",
                 "State: queued",
+                f"Reason: {reason}",
+            ],
+        }
+
+    def queue_recover_stale(
+        self,
+        *,
+        queue_item_id: str,
+        reason: str,
+        action: str,
+    ) -> dict[str, object]:
+        ledger = self._initialized_ledger()
+        service = OperationalControlService(ledger)
+        try:
+            recovery = service.recover_stale_claimed_item(
+                queue_item_id=queue_item_id,
+                actor="cli",
+                reason=reason,
+                action=action,
+                now=_utcnow(),
+            )
+        except (KeyError, StaleClaimRecoveryRejectedError) as exc:
+            raise CliBackendError(
+                failure_code="stale_claim_recovery_rejected",
+                detail=str(exc),
+                retryable=False,
+                human_review_required=True,
+            ) from exc
+        item = ledger.fetch_queue_item(queue_item_id)
+        return {
+            "summary": f"Recovered stale claimed queue item {queue_item_id}.",
+            "queue_item_id": queue_item_id,
+            "queue": None if item is None else self._queue_view(item),
+            "recovery": {
+                "action": recovery.action,
+                "state": recovery.state,
+                "idempotent": recovery.idempotent,
+                "audit_event_id": recovery.audit_event_id,
+            },
+            "human": [
+                f"Queue item: {queue_item_id}",
+                f"Action: {action}",
+                f"State: {recovery.state}",
                 f"Reason: {reason}",
             ],
         }
@@ -406,18 +545,28 @@ class LocalBackendGateway:
         }
 
     def memory_snapshot(self, *, topic_id: str) -> dict[str, object]:
-        snapshot = self._snapshot(topic_id)
-        graph = self._latest_graph(topic_id)
+        snapshot, graph, artifact = self._memory_projection(topic_id)
+        node_type_counts: dict[str, int] = {}
+        for node in artifact.nodes:
+            node_type_counts[node.node_type.value] = node_type_counts.get(node.node_type.value, 0) + 1
         return {
             "summary": f"Loaded memory snapshot for {topic_id}.",
             "topic_id": topic_id,
-            "graph_digest": (
-                graph["graph_digest"] if graph is not None else snapshot.recent_provenance_digest
+            "memory_source": artifact.projection_source,
+            "graph_digest": artifact.graph_digest,
+            "latest_canonical_graph_digest": None if graph is None else graph["graph_digest"],
+            "hypothesis_count": len(artifact.memory_explorer.current_best_node_ids)
+            + len(artifact.memory_explorer.challenger_node_ids),
+            "evidence_count": len(artifact.memory_explorer.evidence_node_ids),
+            "conflict_count": len(artifact.memory_explorer.conflict_node_ids),
+            "challenge_candidate_count": len(self._challenge_candidate_views(artifact)),
+            "node_type_counts": node_type_counts,
+            "snapshot_projection_mismatch": self._snapshot_projection_mismatch(
+                snapshot=snapshot,
+                artifact=artifact,
             ),
-            "hypothesis_count": len(snapshot.current_best_hypotheses)
-            + len(snapshot.challenger_targets),
-            "conflict_count": len(snapshot.active_conflicts),
             "provenance_digest": snapshot.recent_provenance_digest,
+            "authority_notice": artifact.authority_notice,
             "visualization_notice": (
                 "Graph visualization is not a source of truth; backend graph and "
                 "provenance ledgers remain authoritative."
@@ -425,35 +574,75 @@ class LocalBackendGateway:
         }
 
     def memory_conflicts(self, *, topic_id: str) -> dict[str, object]:
-        snapshot = self._snapshot(topic_id)
-        conflicts = [conflict.model_dump(mode="json") for conflict in snapshot.active_conflicts]
+        snapshot, graph, artifact = self._memory_projection(topic_id)
+        conflicts = self._conflict_views(artifact)
+        challenge_candidates = self._challenge_candidate_views(artifact)
+        human = [
+            f"Memory source: {artifact.projection_source}",
+            self._projection_notice(snapshot=snapshot, graph=graph, artifact=artifact),
+            artifact.authority_notice,
+            "Active conflicts:",
+            *(
+                [f"- {conflict['conflict_id']}: {conflict['summary']}" for conflict in conflicts]
+                or ["- None recorded."]
+            ),
+            "Challenge candidates not promoted to active conflicts:",
+            *(
+                [
+                    (
+                        f"- {item['source_label']} challenges {item['target_label']} "
+                        f"({item['status']}): {item['summary']}"
+                    )
+                    for item in challenge_candidates
+                ]
+                or ["- None projected."]
+            ),
+        ]
         return {
-            "summary": f"Found {len(conflicts)} active conflict(s) for {topic_id}.",
+            "summary": (
+                f"Found {len(conflicts)} active conflict(s) and "
+                f"{len(challenge_candidates)} challenge candidate(s) for {topic_id}."
+            ),
             "topic_id": topic_id,
+            "memory_source": artifact.projection_source,
+            "graph_digest": artifact.graph_digest,
+            "authority_notice": artifact.authority_notice,
+            "snapshot_projection_mismatch": self._snapshot_projection_mismatch(
+                snapshot=snapshot,
+                artifact=artifact,
+            ),
             "conflicts": conflicts,
-            "human": [
-                f"- {conflict['conflict_id']}: {conflict['summary']}"
-                for conflict in conflicts
-            ]
-            or ["No active conflicts recorded."],
+            "challenge_candidates": challenge_candidates,
+            "human": human,
         }
 
     def memory_hypotheses(self, *, topic_id: str) -> dict[str, object]:
-        snapshot = self._snapshot(topic_id)
-        hypotheses = [
-            {"role": "current_best", **item.model_dump(mode="json")}
-            for item in snapshot.current_best_hypotheses
-        ] + [
-            {"role": "challenger", **item.model_dump(mode="json")}
-            for item in snapshot.challenger_targets
-        ]
+        snapshot, graph, artifact = self._memory_projection(topic_id)
+        hypotheses = self._hypothesis_views(artifact)
         return {
             "summary": f"Found {len(hypotheses)} hypothesis view(s) for {topic_id}.",
             "topic_id": topic_id,
+            "memory_source": artifact.projection_source,
+            "graph_digest": artifact.graph_digest,
+            "authority_notice": artifact.authority_notice,
+            "snapshot_projection_mismatch": self._snapshot_projection_mismatch(
+                snapshot=snapshot,
+                artifact=artifact,
+            ),
             "hypotheses": hypotheses,
             "human": [
-                f"- {item['role']}: {item['title']} ({item['hypothesis_id']})"
-                for item in hypotheses
+                f"Memory source: {artifact.projection_source}",
+                self._projection_notice(snapshot=snapshot, graph=graph, artifact=artifact),
+                artifact.authority_notice,
+                *[
+                    (
+                        f"- {item['role']}: {item['title']} ({item['hypothesis_id']}); "
+                        f"support={item['support_count']} "
+                        f"challenge={item['challenge_count']} "
+                        f"conflict={item['conflict_count']}"
+                    )
+                    for item in hypotheses
+                ],
             ],
         }
 
@@ -463,6 +652,7 @@ class LocalBackendGateway:
         topic_id: str,
         output_format: str,
         output_path: str,
+        scope: str = "latest",
     ) -> dict[str, object]:
         if output_format not in {"json", "dot", "mermaid"}:
             raise CliBackendError(
@@ -471,7 +661,14 @@ class LocalBackendGateway:
                 retryable=False,
                 human_review_required=False,
             )
-        artifact = self._graph_artifact(topic_id)
+        if scope not in {"latest", "history"}:
+            raise CliBackendError(
+                failure_code="unsupported_graph_scope",
+                detail=f"graph export scope {scope} is not supported",
+                retryable=False,
+                human_review_required=False,
+            )
+        artifact = self._graph_artifact(topic_id, scope=scope)
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(render_graph_artifact(artifact, output_format=output_format))
@@ -480,9 +677,11 @@ class LocalBackendGateway:
             "topic_id": topic_id,
             "output_path": str(path),
             "format": output_format,
+            "scope": scope,
             "graph_digest": artifact.graph_digest,
             "human": [
                 f"Output: {path}",
+                f"Scope: {scope}",
                 artifact.authority_notice,
             ],
         }
@@ -493,6 +692,7 @@ class LocalBackendGateway:
         topic_id: str,
         output_format: str,
         output_path: str,
+        scope: str = "latest",
     ) -> dict[str, object]:
         if output_format != "html":
             raise CliBackendError(
@@ -501,7 +701,14 @@ class LocalBackendGateway:
                 retryable=False,
                 human_review_required=False,
             )
-        artifact = self._graph_artifact(topic_id)
+        if scope not in {"latest", "history"}:
+            raise CliBackendError(
+                failure_code="unsupported_graph_scope",
+                detail=f"graph view scope {scope} is not supported",
+                retryable=False,
+                human_review_required=False,
+            )
+        artifact = self._graph_artifact(topic_id, scope=scope)
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(render_graph_artifact(artifact, output_format=output_format))
@@ -510,9 +717,11 @@ class LocalBackendGateway:
             "topic_id": topic_id,
             "output_path": str(path),
             "format": output_format,
+            "scope": scope,
             "graph_digest": artifact.graph_digest,
             "human": [
                 f"Output: {path}",
+                f"Scope: {scope}",
                 artifact.authority_notice,
             ],
         }
@@ -521,14 +730,27 @@ class LocalBackendGateway:
         ledger = self._initialized_ledger()
         queue = OperationalControlService(ledger).queue_dashboard()
         rows = self._topic_rows()
+        stale_claimed_count = len(queue["stale_claimed"])
+        warnings = [
+            (
+                f"stale claimed queue item {item['queue_item_id']} "
+                f"claimed_by={item['claimed_by']} "
+                f"stale_age={item['stale_age_seconds']}s"
+            )
+            for item in queue["stale_claimed"]
+        ]
         return {
-            "summary": "Backend health inspected.",
+            "summary": (
+                "Backend health inspected."
+                if stale_claimed_count == 0
+                else f"Backend health inspected with {stale_claimed_count} warning(s)."
+            ),
             "db_path": str(self.db_path),
             "topic_count": len(rows),
             "queue": queue,
-            "malformed_proposal_failure_summary": queue[
-                "malformed_proposal_failure_summary"
-            ],
+            "malformed_proposal_failure_summary": queue["malformed_proposal_failure_summary"],
+            "warnings": warnings,
+            "stale_claimed_count": stale_claimed_count,
             "human": [
                 f"Database: {self.db_path}",
                 f"Topics: {len(rows)}",
@@ -538,6 +760,8 @@ class LocalBackendGateway:
                     "Malformed proposal failures: "
                     f"{queue['malformed_proposal_failure_summary']['by_type']}"
                 ),
+                f"Stale claimed: {stale_claimed_count}",
+                *[f"WARNING: {warning}" for warning in warnings],
             ],
         }
 
@@ -731,9 +955,15 @@ class LocalBackendGateway:
             ).fetchone()
         return None if row is None else dict(row)
 
-    def _queue_view(self, row: dict[str, Any]) -> dict[str, Any]:
+    def _queue_view(
+        self,
+        row: dict[str, Any],
+        *,
+        claim: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         payload = _row_json(row, "payload_json")
         failure = self._failure_view(row)
+        claim_view = claim or self._basic_claim_view(row)
         return {
             "queue_item_id": row["id"],
             "topic_id": row["topic_id"],
@@ -745,8 +975,49 @@ class LocalBackendGateway:
             "max_attempts": row["max_attempts"],
             "available_at": row["available_at"],
             "objective": payload.get("objective", ""),
+            "claim": claim_view,
             "failure": {} if failure is None else failure,
         }
+
+    def _basic_claim_view(self, row: dict[str, Any]) -> dict[str, object]:
+        if row.get("state") != QueueJobState.CLAIMED.value:
+            return {}
+        claimed_at = row.get("claimed_at")
+        claim_age_seconds = None
+        if isinstance(claimed_at, str) and claimed_at:
+            parsed = datetime.fromisoformat(claimed_at)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            claim_age_seconds = max(
+                0,
+                int((_utcnow() - parsed.astimezone(timezone.utc)).total_seconds()),
+            )
+        return {
+            "claimed_by": row.get("claimed_by"),
+            "claimed_at": claimed_at,
+            "claim_age_seconds": claim_age_seconds,
+            "stale_after_seconds": DEFAULT_STALE_CLAIM_SECONDS,
+            "stale": (
+                claim_age_seconds is not None
+                and claim_age_seconds >= DEFAULT_STALE_CLAIM_SECONDS
+            ),
+            "stale_basis": "claimed_at",
+            "stale_age_seconds": claim_age_seconds,
+        }
+
+    def _queue_human_line(self, item: dict[str, Any]) -> str:
+        line = (
+            f"- {item['queue_item_id']} {item['kind']} ({item['state']}): "
+            f"retryable={item['failure'].get('retryable', False)} "
+            f"human_review={item['failure'].get('human_review_required', False)}"
+        )
+        if item["claim"]:
+            line += (
+                f" claimed_by={item['claim'].get('claimed_by', 'none')} "
+                f"claim_age={item['claim'].get('claim_age_seconds', 'n/a')}s "
+                f"stale={item['claim'].get('stale', False)}"
+            )
+        return line
 
     def _failure_view(self, row: dict[str, Any]) -> dict[str, object] | None:
         if row.get("last_failure_code") is None:
@@ -778,8 +1049,226 @@ class LocalBackendGateway:
             ).fetchone()
         return None if row is None else dict(row)
 
-    def _graph_artifact(self, topic_id: str) -> GraphExportArtifact:
+    def _memory_projection(
+        self,
+        topic_id: str,
+    ) -> tuple[TopicSnapshot, dict[str, Any] | None, GraphExportArtifact]:
         snapshot = self._snapshot(topic_id)
+        graph = self._latest_graph(topic_id)
+        artifact = build_graph_export_artifact(
+            topic_id=topic_id,
+            snapshot=snapshot,
+            graph_write=graph,
+            generated_at=_utcnow(),
+        )
+        return snapshot, graph, artifact
+
+    def _hypothesis_views(
+        self,
+        artifact: GraphExportArtifact,
+    ) -> list[dict[str, object]]:
+        nodes = {node.node_id: node for node in artifact.nodes}
+        views: list[dict[str, object]] = []
+        for role, node_ids in (
+            ("current_best", artifact.memory_explorer.current_best_node_ids),
+            ("challenger", artifact.memory_explorer.challenger_node_ids),
+        ):
+            for node_id in node_ids:
+                node = nodes[node_id]
+                support_edges = self._relation_views(
+                    artifact,
+                    node_id=node_id,
+                    edge_types={"supports"},
+                    include_incoming=True,
+                    include_outgoing=False,
+                )
+                challenge_edges = self._relation_views(
+                    artifact,
+                    node_id=node_id,
+                    edge_types={"challenges"},
+                    include_incoming=True,
+                    include_outgoing=True,
+                )
+                conflict_edges = self._relation_views(
+                    artifact,
+                    node_id=node_id,
+                    edge_types={"conflicts_with"},
+                    include_incoming=True,
+                    include_outgoing=True,
+                )
+                views.append(
+                    {
+                        "role": role,
+                        "hypothesis_id": node.node_id,
+                        "title": node.label,
+                        "summary": self._display_summary(node.summary),
+                        "temporal_scope": node.temporal_scope,
+                        "provenance_ids": node.provenance_ids,
+                        "support_count": len(support_edges),
+                        "challenge_count": len(challenge_edges),
+                        "conflict_count": len(conflict_edges),
+                        "supporting_relations": support_edges,
+                        "challenging_relations": challenge_edges,
+                        "conflict_relations": conflict_edges,
+                    }
+                )
+        return views
+
+    def _conflict_views(
+        self,
+        artifact: GraphExportArtifact,
+    ) -> list[dict[str, object]]:
+        nodes = {node.node_id: node for node in artifact.nodes}
+        conflicts: list[dict[str, object]] = []
+        for conflict_id in artifact.memory_explorer.conflict_node_ids:
+            node = nodes[conflict_id]
+            conflict_relations = self._relation_views(
+                artifact,
+                node_id=conflict_id,
+                edge_types={"conflicts_with"},
+                include_incoming=True,
+                include_outgoing=True,
+            )
+            conflicts.append(
+                {
+                    "conflict_id": node.node_id,
+                    "summary": node.summary,
+                    "title": node.label,
+                    "status": "active",
+                    "temporal_scope": node.temporal_scope,
+                    "provenance_ids": node.provenance_ids,
+                    "conflict_relations": conflict_relations,
+                }
+            )
+        return conflicts
+
+    def _challenge_candidate_views(
+        self,
+        artifact: GraphExportArtifact,
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                **view,
+                "status": "challenge_not_promoted_to_active_conflict",
+            }
+            for view in self._relation_views(
+                artifact,
+                node_id=None,
+                edge_types={"challenges"},
+                include_incoming=True,
+                include_outgoing=True,
+            )
+        ]
+
+    def _display_summary(self, summary: str) -> str:
+        for prefix in ("current best: ", "challenger: "):
+            if summary.startswith(prefix):
+                return summary.removeprefix(prefix)
+        return summary
+
+    def _relation_views(
+        self,
+        artifact: GraphExportArtifact,
+        *,
+        node_id: str | None,
+        edge_types: set[str],
+        include_incoming: bool,
+        include_outgoing: bool,
+    ) -> list[dict[str, object]]:
+        nodes = {node.node_id: node for node in artifact.nodes}
+        relations: list[dict[str, object]] = []
+        for edge in artifact.edges:
+            edge_type = edge.edge_type.value
+            if edge_type not in edge_types:
+                continue
+            if node_id is not None:
+                incoming = include_incoming and edge.target_node_id == node_id
+                outgoing = include_outgoing and edge.source_node_id == node_id
+                if not incoming and not outgoing:
+                    continue
+            source = nodes[edge.source_node_id]
+            target = nodes[edge.target_node_id]
+            relations.append(
+                {
+                    "edge_id": edge.edge_id,
+                    "relation": edge_type,
+                    "source_node_id": edge.source_node_id,
+                    "source_label": source.label,
+                    "source_type": source.node_type.value,
+                    "target_node_id": edge.target_node_id,
+                    "target_label": target.label,
+                    "target_type": target.node_type.value,
+                    "summary": edge.summary,
+                    "provenance_ids": edge.provenance_ids,
+                }
+            )
+        return sorted(
+            relations,
+            key=lambda item: (
+                str(item["relation"]),
+                str(item["source_node_id"]),
+                str(item["target_node_id"]),
+                str(item["edge_id"]),
+            ),
+        )
+
+    def _projection_notice(
+        self,
+        *,
+        snapshot: TopicSnapshot,
+        graph: dict[str, Any] | None,
+        artifact: GraphExportArtifact,
+    ) -> str:
+        if graph is None:
+            return "No canonical graph write found; using topic snapshot fallback."
+        if self._snapshot_projection_mismatch(snapshot=snapshot, artifact=artifact):
+            return (
+                "Latest canonical graph projection differs from the topic snapshot; "
+                "showing graph-backed memory view."
+            )
+        return "Latest canonical graph projection matches the topic snapshot."
+
+    def _snapshot_projection_mismatch(
+        self,
+        *,
+        snapshot: TopicSnapshot,
+        artifact: GraphExportArtifact,
+    ) -> bool:
+        snapshot_current = {item.hypothesis_id for item in snapshot.current_best_hypotheses}
+        snapshot_challengers = {item.hypothesis_id for item in snapshot.challenger_targets}
+        snapshot_conflicts = {item.conflict_id for item in snapshot.active_conflicts}
+        projection_current = set(artifact.memory_explorer.current_best_node_ids)
+        projection_challengers = set(artifact.memory_explorer.challenger_node_ids)
+        projection_conflicts = set(artifact.memory_explorer.conflict_node_ids)
+        return (
+            snapshot_current != projection_current
+            or snapshot_challengers != projection_challengers
+            or snapshot_conflicts != projection_conflicts
+        )
+
+    def _graph_history(self, topic_id: str) -> list[dict[str, Any]]:
+        ledger = self._initialized_ledger()
+        with ledger.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM canonical_graph_writes
+                WHERE topic_id = ?
+                ORDER BY created_at ASC, run_id ASC
+                """,
+                (topic_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _graph_artifact(self, topic_id: str, *, scope: str) -> GraphExportArtifact:
+        snapshot = self._snapshot(topic_id)
+        if scope == "history":
+            return build_graph_export_artifact(
+                topic_id=topic_id,
+                snapshot=snapshot,
+                graph_writes=self._graph_history(topic_id),
+                generated_at=_utcnow(),
+            )
         return build_graph_export_artifact(
             topic_id=topic_id,
             snapshot=snapshot,

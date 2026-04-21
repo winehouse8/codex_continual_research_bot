@@ -68,4 +68,7 @@ is not a source of truth and that backend graph/provenance ledgers remain
 authoritative. JSON exports include a `memory_explorer` grouping for current
 best hypotheses, challengers, evidence, conflicts, and provenance. DOT and
 Mermaid exports use the same deterministic graph projection so review diffs do
-not depend on database row order.
+not depend on database row order. `crb graph export` and `crb graph view`
+support `--scope latest` for the newest canonical graph write and
+`--scope history` for a deterministic topic-wide projection across all
+canonical graph writes.

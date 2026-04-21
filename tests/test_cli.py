@@ -3,18 +3,34 @@ from __future__ import annotations
 import ast
 import json
 import shlex
+from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 
 from codex_continual_research_bot.cli import build_parser, main
 from codex_continual_research_bot.cli_backend import LocalBackendGateway
 from codex_continual_research_bot.cli_contracts import CliResult
-from codex_continual_research_bot.contracts import FailureCode
+from codex_continual_research_bot.contracts import (
+    BackendStateUpdateSummary,
+    FailureCode,
+    InteractiveRunStatus,
+    ProposalBundle,
+    QueueJobState,
+    RunReportViewModel,
+)
+from codex_continual_research_bot.graph_canonicalization import (
+    CanonicalGraphService,
+    CanonicalizationContext,
+    HypothesisSnapshot,
+)
 from codex_continual_research_bot.persistence import SQLitePersistenceLedger
 from codex_continual_research_bot.ux_contracts import extract_crb_examples
 
 
 ROOT = Path(__file__).resolve().parent.parent
+STALE_CLAIMED_AT = datetime(2000, 1, 1, 12, 0, tzinfo=timezone.utc)
+FIXTURES_DIR = ROOT / "fixtures"
+NOW = datetime(2026, 4, 21, 12, 0, tzinfo=timezone.utc)
 
 
 def run_cli(argv: list[str], backend: LocalBackendGateway) -> tuple[int, str, str]:
@@ -27,6 +43,264 @@ def run_cli(argv: list[str], backend: LocalBackendGateway) -> tuple[int, str, st
 def parsed_json(output: str) -> CliResult:
     return CliResult.model_validate(json.loads(output))
 
+
+def force_stale_claim(
+    ledger: SQLitePersistenceLedger,
+    *,
+    queue_item_id: str,
+    run_id: str,
+) -> None:
+    ledger.claim_queue_item_for_run(
+        queue_item_id=queue_item_id,
+        worker_id="worker-stale",
+        run_id=run_id,
+        mode="scheduled",
+    )
+    with ledger.connect() as connection, connection:
+        connection.execute(
+            """
+            UPDATE queue_items
+            SET claimed_at = ?
+            WHERE id = ?
+            """,
+            (STALE_CLAIMED_AT.isoformat(), queue_item_id),
+        )
+
+def load_proposal() -> ProposalBundle:
+    return ProposalBundle.model_validate(
+        json.loads((FIXTURES_DIR / "proposal_bundle.json").read_text())
+    )
+
+
+def create_codex_auth_topic(backend: LocalBackendGateway) -> None:
+    run_cli(["init"], backend)
+    run_cli(
+        [
+            "topic",
+            "create",
+            "Codex auth boundary",
+            "--objective",
+            "Track session ownership risk",
+        ],
+        backend,
+    )
+
+
+def seed_graph_backed_memory(backend: LocalBackendGateway, db_path: Path) -> None:
+    _, output, _ = run_cli(
+        [
+            "run",
+            "start",
+            "topic_codex_auth_boundary",
+            "--input",
+            "counterargument: warning-only stale sessions may be safe",
+            "--json",
+        ],
+        backend,
+    )
+    started = parsed_json(output)
+    run_id = str(started.data["run_id"])
+    queue_item_id = str(started.data["queue_item_id"])
+
+    ledger = SQLitePersistenceLedger(db_path)
+    claimed = ledger.claim_queue_item_for_run(
+        queue_item_id=queue_item_id,
+        worker_id="worker-a",
+        run_id=run_id,
+        mode="interactive",
+        now=datetime.now(timezone.utc),
+    )
+    assert claimed is not None
+    queue_item = ledger.fetch_queue_item(queue_item_id)
+    assert queue_item is not None
+
+    canonical = CanonicalGraphService().canonicalize(
+        proposal=load_proposal(),
+        context=CanonicalizationContext(
+            topic_id="topic_codex_auth_boundary",
+            run_id=run_id,
+            proposal_id="proposal_001",
+            current_best_hypothesis_id="hyp_001",
+            existing_hypotheses=[
+                HypothesisSnapshot(
+                    hypothesis_id="hyp_001",
+                    title="Block scheduled run on session ambiguity",
+                    statement=(
+                        "A scheduled run must stop when principal or workspace "
+                        "inspection is ambiguous."
+                    ),
+                    version=2,
+                )
+            ],
+        ),
+    )
+    assert not canonical.quarantined
+    report = RunReportViewModel(
+        report_id="report_001",
+        run_id=run_id,
+        topic_id="topic_codex_auth_boundary",
+        trigger_id=queue_item_id,
+        idempotency_key=str(queue_item["idempotency_key"]),
+        snapshot_version=1,
+        status=InteractiveRunStatus.COMPLETED,
+        summary="Graph-backed memory was updated.",
+        proposal_digest="sha256:proposal",
+        backend_state_update=BackendStateUpdateSummary(
+            graph_digest=canonical.digest,
+            node_count=len(canonical.graph.nodes),
+            edge_count=len(canonical.graph.edges),
+            review_flags=[],
+        ),
+        operator_failure_summary=None,
+        created_at=NOW,
+    )
+    ledger.record_interactive_run_success(
+        report=report,
+        proposal_id="proposal_001",
+        graph_payload=canonical.graph.model_dump(mode="json"),
+        graph_digest=canonical.digest,
+        node_count=len(canonical.graph.nodes),
+        edge_count=len(canonical.graph.edges),
+    )
+
+def seed_canonical_graph_write(
+    backend: LocalBackendGateway,
+    *,
+    topic_id: str,
+    run_id: str,
+    queue_item_id: str,
+    proposal_id: str,
+    created_at: str,
+) -> None:
+    ledger = SQLitePersistenceLedger(backend.db_path)
+    hypothesis_id = f"hypothesis:{proposal_id}:v1"
+    provenance_id = f"provenance:{proposal_id}"
+    evidence_id = f"evidence:{proposal_id}"
+    graph_payload = {
+        "nodes": [
+            {
+                "id": hypothesis_id,
+                "label": "Hypothesis",
+                "layer": "epistemic",
+                "key": f"{proposal_id}:v1",
+                "properties": {
+                    "hypothesis_id": proposal_id,
+                    "title": f"History hypothesis {proposal_id}",
+                    "statement": f"History statement from {proposal_id}.",
+                    "version": 1,
+                    "is_current_best": True,
+                },
+            },
+            {
+                "id": evidence_id,
+                "label": "Evidence",
+                "layer": "world",
+                "key": proposal_id,
+                "properties": {
+                    "title": f"Evidence {proposal_id}",
+                    "source_url": f"https://example.com/{proposal_id}",
+                    "accessed_at": created_at,
+                },
+            },
+            {
+                "id": provenance_id,
+                "label": "ProvenanceRecord",
+                "layer": "provenance",
+                "key": proposal_id,
+                "properties": {
+                    "proposal_id": proposal_id,
+                    "run_id": run_id,
+                    "summary_draft": f"Run provenance for {proposal_id}.",
+                },
+            },
+        ],
+        "edges": [
+            {
+                "id": f"edge:{proposal_id}:hypothesis_recorded",
+                "type": "RECORDED_IN",
+                "layer": "provenance",
+                "source": hypothesis_id,
+                "target": provenance_id,
+                "properties": {},
+            },
+            {
+                "id": f"edge:{proposal_id}:evidence_recorded",
+                "type": "RECORDED_IN",
+                "layer": "provenance",
+                "source": evidence_id,
+                "target": provenance_id,
+                "properties": {},
+            },
+        ],
+    }
+    idempotency_key = f"idem_{run_id}"
+    with ledger.connect() as connection, connection:
+        connection.execute(
+            """
+            INSERT INTO idempotency_keys(idempotency_key, scope, request_digest, run_id, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (idempotency_key, "run.execute", f"sha256:{run_id}", run_id, created_at),
+        )
+        connection.execute(
+            """
+            INSERT INTO queue_items(
+                id, topic_id, kind, state, requested_run_id, dedupe_key,
+                idempotency_key, priority, attempts, max_attempts, available_at,
+                payload_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                queue_item_id,
+                topic_id,
+                "run.execute",
+                "completed",
+                run_id,
+                f"dedupe_{run_id}",
+                idempotency_key,
+                10,
+                1,
+                5,
+                created_at,
+                "{}",
+                created_at,
+                created_at,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO runs(id, topic_id, queue_item_id, idempotency_key, mode, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                topic_id,
+                queue_item_id,
+                idempotency_key,
+                "interactive",
+                "completed",
+                created_at,
+                created_at,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO canonical_graph_writes(
+                run_id, topic_id, proposal_id, graph_digest, node_count,
+                edge_count, graph_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                topic_id,
+                proposal_id,
+                f"sha256:{proposal_id}",
+                len(graph_payload["nodes"]),
+                len(graph_payload["edges"]),
+                json.dumps(graph_payload, sort_keys=True),
+                created_at,
+            ),
+        )
 
 def test_cli_help_lists_phase13_commands() -> None:
     help_text = build_parser().format_help()
@@ -261,6 +535,162 @@ def test_queue_dead_letter_retry_flow_shows_failure_classification(tmp_path: Pat
     assert retried.data["queue"]["state"] == "queued"
 
 
+def test_queue_list_and_ops_health_warn_about_stale_claimed_items(tmp_path: Path) -> None:
+    backend = LocalBackendGateway(db_path=tmp_path / "crb.sqlite3", workspace_root=tmp_path)
+    run_cli(["init"], backend)
+    run_cli(
+        [
+            "topic",
+            "create",
+            "Codex auth boundary",
+            "--objective",
+            "Track session ownership risk",
+        ],
+        backend,
+    )
+    _, output, _ = run_cli(
+        [
+            "run",
+            "start",
+            "topic_codex_auth_boundary",
+            "--input",
+            "question: can stale sessions be retried?",
+            "--json",
+        ],
+        backend,
+    )
+    started = parsed_json(output)
+    queue_item_id = str(started.data["queue_item_id"])
+    run_id = str(started.data["run_id"])
+    force_stale_claim(
+        SQLitePersistenceLedger(tmp_path / "crb.sqlite3"),
+        queue_item_id=queue_item_id,
+        run_id=run_id,
+    )
+
+    code, output, _ = run_cli(
+        ["queue", "list", "--topic", "topic_codex_auth_boundary", "--json"],
+        backend,
+    )
+    listed = parsed_json(output)
+    assert code == 0
+    assert listed.data["stale_claimed_count"] == 1
+    assert listed.data["items"][0]["claim"]["stale"] is True
+    assert listed.data["items"][0]["claim"]["claimed_by"] == "worker-stale"
+
+    code, output, _ = run_cli(["ops", "health", "--json"], backend)
+    health = parsed_json(output)
+    assert code == 0
+    assert health.data["stale_claimed_count"] == 1
+    assert "stale claimed queue item" in health.data["warnings"][0]
+
+
+def test_queue_retry_recovers_stale_claimed_item_and_is_idempotent(tmp_path: Path) -> None:
+    backend = LocalBackendGateway(db_path=tmp_path / "crb.sqlite3", workspace_root=tmp_path)
+    run_cli(["init"], backend)
+    run_cli(
+        [
+            "topic",
+            "create",
+            "Codex auth boundary",
+            "--objective",
+            "Track session ownership risk",
+        ],
+        backend,
+    )
+    _, output, _ = run_cli(
+        [
+            "run",
+            "start",
+            "topic_codex_auth_boundary",
+            "--input",
+            "question: can stale sessions be retried?",
+            "--json",
+        ],
+        backend,
+    )
+    started = parsed_json(output)
+    queue_item_id = str(started.data["queue_item_id"])
+    run_id = str(started.data["run_id"])
+    ledger = SQLitePersistenceLedger(tmp_path / "crb.sqlite3")
+    force_stale_claim(
+        ledger,
+        queue_item_id=queue_item_id,
+        run_id=run_id,
+    )
+
+    code, output, _ = run_cli(
+        ["queue", "retry", queue_item_id, "--reason", "worker process exited", "--json"],
+        backend,
+    )
+    retried = parsed_json(output)
+    assert code == 0
+    assert retried.data["queue"]["state"] == QueueJobState.QUEUED.value
+    assert retried.data["recovery"]["idempotent"] is False
+    audit = ledger.list_operation_audit_events(scope="queue", subject_id=queue_item_id)
+    assert audit[0]["event_type"] == "stale_claim.recovered"
+
+    code, output, _ = run_cli(
+        ["queue", "recover-stale", queue_item_id, "--reason", "repeat", "--json"],
+        backend,
+    )
+    duplicate = parsed_json(output)
+    assert code == 0
+    assert duplicate.data["recovery"]["idempotent"] is True
+
+
+def test_recover_stale_can_dead_letter_claimed_item(tmp_path: Path) -> None:
+    backend = LocalBackendGateway(db_path=tmp_path / "crb.sqlite3", workspace_root=tmp_path)
+    run_cli(["init"], backend)
+    run_cli(
+        [
+            "topic",
+            "create",
+            "Codex auth boundary",
+            "--objective",
+            "Track session ownership risk",
+        ],
+        backend,
+    )
+    _, output, _ = run_cli(
+        [
+            "run",
+            "start",
+            "topic_codex_auth_boundary",
+            "--input",
+            "question: should stale work be quarantined?",
+            "--json",
+        ],
+        backend,
+    )
+    started = parsed_json(output)
+    queue_item_id = str(started.data["queue_item_id"])
+    run_id = str(started.data["run_id"])
+    force_stale_claim(
+        SQLitePersistenceLedger(tmp_path / "crb.sqlite3"),
+        queue_item_id=queue_item_id,
+        run_id=run_id,
+    )
+
+    code, output, _ = run_cli(
+        [
+            "queue",
+            "recover-stale",
+            queue_item_id,
+            "--action",
+            "dead_letter",
+            "--reason",
+            "operator quarantine",
+            "--json",
+        ],
+        backend,
+    )
+    recovered = parsed_json(output)
+    assert code == 0
+    assert recovered.data["queue"]["state"] == QueueJobState.DEAD_LETTER.value
+    assert recovered.data["recovery"]["action"] == "dead_letter"
+
+
 def test_json_result_schema_for_memory_and_ops(tmp_path: Path) -> None:
     backend = LocalBackendGateway(db_path=tmp_path / "crb.sqlite3", workspace_root=tmp_path)
     run_cli(["init"], backend)
@@ -290,26 +720,89 @@ def test_json_result_schema_for_memory_and_ops(tmp_path: Path) -> None:
 
 def test_human_readable_output_snapshot(tmp_path: Path) -> None:
     backend = LocalBackendGateway(db_path=tmp_path / "crb.sqlite3", workspace_root=tmp_path)
-    run_cli(["init"], backend)
-    run_cli(
-        [
-            "topic",
-            "create",
-            "Codex auth boundary",
-            "--objective",
-            "Track session ownership risk",
-        ],
-        backend,
-    )
+    create_codex_auth_topic(backend)
 
     code, output, _ = run_cli(["memory", "hypotheses", "topic_codex_auth_boundary"], backend)
 
     assert code == 0
     assert output == (
         "Found 1 hypothesis view(s) for topic_codex_auth_boundary.\n"
+        "Memory source: topic_snapshot\n"
+        "No canonical graph write found; using topic snapshot fallback.\n"
+        "Graph export is not a source of truth; backend graph and provenance "
+        "ledgers remain authoritative.\n"
         "- current_best: Initial objective hypothesis "
-        "(hyp_codex_auth_boundary_current_best)\n"
+        "(hyp_codex_auth_boundary_current_best); support=0 challenge=0 conflict=0\n"
     )
+
+
+def test_memory_hypotheses_uses_graph_backed_projection_when_available(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "crb.sqlite3"
+    backend = LocalBackendGateway(db_path=db_path, workspace_root=tmp_path)
+    create_codex_auth_topic(backend)
+    seed_graph_backed_memory(backend, db_path)
+
+    code, output, _ = run_cli(
+        ["memory", "hypotheses", "topic_codex_auth_boundary", "--json"],
+        backend,
+    )
+    result = parsed_json(output)
+    hypotheses = result.data["hypotheses"]
+
+    assert code == 0
+    assert result.data["memory_source"] == "canonical_graph_write"
+    assert result.data["snapshot_projection_mismatch"] is True
+    assert any(
+        item["role"] == "challenger"
+        and item["title"] == "Allow warning-only stale session handling"
+        for item in hypotheses
+    )
+    assert any(
+        item["role"] == "current_best"
+        and item["title"] == "Block scheduled run on session ambiguity"
+        for item in hypotheses
+    )
+
+
+def test_memory_conflicts_exposes_challenge_candidates_without_active_conflicts(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "crb.sqlite3"
+    backend = LocalBackendGateway(db_path=db_path, workspace_root=tmp_path)
+    create_codex_auth_topic(backend)
+    seed_graph_backed_memory(backend, db_path)
+
+    code, output, _ = run_cli(
+        ["memory", "conflicts", "topic_codex_auth_boundary", "--json"],
+        backend,
+    )
+    result = parsed_json(output)
+
+    assert code == 0
+    assert result.data["conflicts"] == []
+    assert result.data["challenge_candidates"]
+    assert {
+        candidate["status"] for candidate in result.data["challenge_candidates"]
+    } == {"challenge_not_promoted_to_active_conflict"}
+
+
+def test_topic_show_uses_graph_memory_summary_when_snapshot_is_stale(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "crb.sqlite3"
+    backend = LocalBackendGateway(db_path=db_path, workspace_root=tmp_path)
+    create_codex_auth_topic(backend)
+    seed_graph_backed_memory(backend, db_path)
+
+    code, output, _ = run_cli(["topic", "show", "topic_codex_auth_boundary"], backend)
+
+    assert code == 0
+    assert "Memory source: canonical_graph_write" in output
+    assert "Latest canonical graph projection differs from the topic snapshot" in output
+    assert "Block scheduled run on session ambiguity" in output
+    assert "Allow warning-only stale session handling" in output
 
 
 def test_graph_export_and_view_commands_write_visualization_artifacts(tmp_path: Path) -> None:
@@ -398,6 +891,110 @@ def test_graph_export_and_view_commands_write_visualization_artifacts(tmp_path: 
     assert code == 0
     assert parsed_json(output).data["output_path"] == str(graph_html)
     assert "Initial objective hypothesis" in graph_html.read_text()
+
+
+def test_graph_export_scope_latest_and_history_select_distinct_projections(
+    tmp_path: Path,
+) -> None:
+    backend = LocalBackendGateway(db_path=tmp_path / "crb.sqlite3", workspace_root=tmp_path)
+    run_cli(["init"], backend)
+    run_cli(
+        [
+            "topic",
+            "create",
+            "Codex auth boundary",
+            "--objective",
+            "Track session ownership risk",
+        ],
+        backend,
+    )
+    seed_canonical_graph_write(
+        backend,
+        topic_id="topic_codex_auth_boundary",
+        run_id="run_001",
+        queue_item_id="queue_001",
+        proposal_id="proposal_001",
+        created_at="2026-04-21T12:00:00+00:00",
+    )
+    seed_canonical_graph_write(
+        backend,
+        topic_id="topic_codex_auth_boundary",
+        run_id="run_002",
+        queue_item_id="queue_002",
+        proposal_id="proposal_002",
+        created_at="2026-04-21T13:00:00+00:00",
+    )
+    latest_json = tmp_path / "latest.json"
+    history_json = tmp_path / "history.json"
+    history_html = tmp_path / "history.html"
+
+    code, output, _ = run_cli(
+        [
+            "graph",
+            "export",
+            "topic_codex_auth_boundary",
+            "--scope",
+            "latest",
+            "--format",
+            "json",
+            "--output",
+            str(latest_json),
+            "--json",
+        ],
+        backend,
+    )
+    assert code == 0
+    assert parsed_json(output).data["scope"] == "latest"
+    latest_payload = json.loads(latest_json.read_text())
+    assert latest_payload["projection_source"] == "canonical_graph_write"
+    assert latest_payload["memory_explorer"]["provenance_node_ids"] == [
+        "provenance:proposal_002"
+    ]
+
+    code, output, _ = run_cli(
+        [
+            "graph",
+            "export",
+            "topic_codex_auth_boundary",
+            "--scope",
+            "history",
+            "--format",
+            "json",
+            "--output",
+            str(history_json),
+            "--json",
+        ],
+        backend,
+    )
+    assert code == 0
+    assert parsed_json(output).data["scope"] == "history"
+    history_payload = json.loads(history_json.read_text())
+    assert history_payload["projection_source"] == "canonical_graph_history"
+    assert history_payload["memory_explorer"]["provenance_node_ids"] == [
+        "provenance:proposal_001",
+        "provenance:proposal_002",
+    ]
+
+    code, output, _ = run_cli(
+        [
+            "graph",
+            "view",
+            "topic_codex_auth_boundary",
+            "--scope",
+            "history",
+            "--format",
+            "html",
+            "--output",
+            str(history_html),
+            "--json",
+        ],
+        backend,
+    )
+    assert code == 0
+    assert parsed_json(output).data["scope"] == "history"
+    html = history_html.read_text()
+    assert "Proposal proposal_001" in html
+    assert "Proposal proposal_002" in html
 
 
 def test_cli_module_does_not_import_persistence_write_boundary() -> None:
