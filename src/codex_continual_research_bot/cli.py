@@ -37,6 +37,14 @@ class CliBackend(Protocol):
 
     def queue_retry(self, *, queue_item_id: str, reason: str) -> dict[str, object]: ...
 
+    def queue_recover_stale(
+        self,
+        *,
+        queue_item_id: str,
+        reason: str,
+        action: str,
+    ) -> dict[str, object]: ...
+
     def queue_dead_letter(self, *, queue_item_id: str) -> dict[str, object]: ...
 
     def memory_snapshot(self, *, topic_id: str) -> dict[str, object]: ...
@@ -122,9 +130,28 @@ def build_parser() -> argparse.ArgumentParser:
     queue_sub = queue.add_subparsers(dest="action", required=True)
     queue_list = _add_leaf(queue_sub, "list", "List queue items.", "queue.list")
     queue_list.add_argument("--topic", dest="topic_id")
-    queue_retry = _add_leaf(queue_sub, "retry", "Recover a dead-lettered queue item.", "queue.retry")
+    queue_retry = _add_leaf(
+        queue_sub,
+        "retry",
+        "Recover a dead-lettered or stale claimed queue item.",
+        "queue.retry",
+    )
     queue_retry.add_argument("queue_item_id")
     queue_retry.add_argument("--reason", required=True)
+    queue_recover = _add_leaf(
+        queue_sub,
+        "recover-stale",
+        "Recover a stale claimed queue item.",
+        "queue.recover-stale",
+    )
+    queue_recover.add_argument("queue_item_id")
+    queue_recover.add_argument("--reason", required=True)
+    queue_recover.add_argument(
+        "--action",
+        choices=("retry", "dead_letter"),
+        default="retry",
+        help="Recover to queued retry or dead-letter state.",
+    )
     queue_dead = _add_leaf(queue_sub, "dead-letter", "Inspect a dead-letter item.", "queue.dead-letter")
     queue_dead.add_argument("queue_item_id")
 
@@ -240,6 +267,12 @@ def dispatch(args: argparse.Namespace, backend: CliBackend) -> dict[str, object]
         return backend.queue_list(topic_id=args.topic_id)
     if command_id == "queue.retry":
         return backend.queue_retry(queue_item_id=args.queue_item_id, reason=args.reason)
+    if command_id == "queue.recover-stale":
+        return backend.queue_recover_stale(
+            queue_item_id=args.queue_item_id,
+            reason=args.reason,
+            action=args.action,
+        )
     if command_id == "queue.dead-letter":
         return backend.queue_dead_letter(queue_item_id=args.queue_item_id)
     if command_id == "memory.snapshot":

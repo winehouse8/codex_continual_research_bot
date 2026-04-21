@@ -22,6 +22,7 @@ from codex_continual_research_bot.contracts import (
 from codex_continual_research_bot.operational import (
     OperationalControlService,
     ReplayArtifactMissingError,
+    StaleClaimRecoveryRejectedError,
 )
 from codex_continual_research_bot.persistence import SQLitePersistenceLedger
 from codex_continual_research_bot.scheduler import TopicScheduleCandidate
@@ -236,6 +237,165 @@ def test_dead_letter_recovery_requeues_item_with_explicit_audit(tmp_path: Path) 
     audit = ledger.list_operation_audit_events(scope="queue", subject_id="queue_001")
     assert audit[0]["event_type"] == "dead_letter.recovered"
     assert audit[0]["payload_json"]["previous_failure_code"] == "codex_transport_timeout"
+
+
+def test_stale_claimed_queue_item_detection_uses_claimed_at(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    seed_claimed_run(ledger)
+    service = OperationalControlService(ledger)
+
+    claimed = service.list_claimed_queue_items(
+        now=NOW + timedelta(minutes=20),
+        stale_after_seconds=15 * 60,
+    )
+
+    assert len(claimed) == 1
+    assert claimed[0]["queue_item_id"] == "queue_001"
+    assert claimed[0]["claimed_by"] == "worker-a"
+    assert claimed[0]["stale"] is True
+    assert claimed[0]["stale_basis"] == "claimed_at"
+    assert claimed[0]["claim_age_seconds"] == 20 * 60
+
+
+def test_active_worker_heartbeat_prevents_stale_claim_warning(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    seed_claimed_run(ledger)
+    ledger.create_session_record(
+        session_id="sess_001",
+        principal_id="principal_001",
+        workspace_id="ws_001",
+        state="ready",
+        credential_locator="~/.codex/auth.json",
+    )
+    ledger.acquire_session_lease(
+        session_id="sess_001",
+        holder="worker-a",
+        ttl_seconds=900,
+        run_id="run_001",
+        now=NOW + timedelta(minutes=19),
+    )
+    service = OperationalControlService(ledger)
+
+    claimed = service.list_claimed_queue_items(
+        now=NOW + timedelta(minutes=20),
+        stale_after_seconds=15 * 60,
+    )
+
+    assert claimed[0]["stale"] is False
+    assert claimed[0]["has_active_worker_lease"] is True
+    assert claimed[0]["stale_basis"] == "worker_heartbeat"
+    assert claimed[0]["worker_heartbeat_age_seconds"] == 60
+
+
+def test_stale_claim_recovery_requeues_item_with_audit(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    seed_claimed_run(ledger)
+    service = OperationalControlService(ledger)
+
+    recovery = service.recover_stale_claimed_item(
+        queue_item_id="queue_001",
+        actor="operator-a",
+        reason="worker process exited without ack",
+        action="retry",
+        now=NOW + timedelta(minutes=20),
+        stale_after_seconds=15 * 60,
+    )
+
+    queue_item = ledger.fetch_queue_item("queue_001")
+    run = ledger.fetch_run("run_001")
+    assert recovery.state == QueueJobState.QUEUED.value
+    assert recovery.idempotent is False
+    assert queue_item is not None
+    assert queue_item["state"] == QueueJobState.QUEUED.value
+    assert queue_item["claimed_by"] is None
+    assert queue_item["claimed_at"] is None
+    assert queue_item["last_failure_code"] == FailureCode.RUNNER_HOST_UNAVAILABLE.value
+    assert run is not None
+    assert run["status"] == "queued"
+    audit = ledger.list_operation_audit_events(scope="queue", subject_id="queue_001")
+    assert audit[0]["event_type"] == "stale_claim.recovered"
+    assert audit[0]["payload_json"]["previous_claimed_by"] == "worker-a"
+    assert audit[0]["payload_json"]["stale_age_seconds"] == 20 * 60
+
+
+def test_non_stale_claimed_item_recovery_is_rejected(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    seed_claimed_run(ledger)
+    service = OperationalControlService(ledger)
+
+    with pytest.raises(StaleClaimRecoveryRejectedError, match="not stale"):
+        service.recover_stale_claimed_item(
+            queue_item_id="queue_001",
+            actor="operator-a",
+            reason="too early",
+            now=NOW + timedelta(minutes=5),
+            stale_after_seconds=15 * 60,
+        )
+
+    assert ledger.fetch_queue_item("queue_001")["state"] == QueueJobState.CLAIMED.value
+
+
+def test_duplicate_stale_claim_recovery_is_idempotent(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    seed_claimed_run(ledger)
+    service = OperationalControlService(ledger)
+
+    first = service.recover_stale_claimed_item(
+        queue_item_id="queue_001",
+        actor="operator-a",
+        reason="worker process exited without ack",
+        action="retry",
+        now=NOW + timedelta(minutes=20),
+        stale_after_seconds=15 * 60,
+    )
+    second = service.recover_stale_claimed_item(
+        queue_item_id="queue_001",
+        actor="operator-a",
+        reason="worker process exited without ack",
+        action="retry",
+        now=NOW + timedelta(minutes=21),
+        stale_after_seconds=15 * 60,
+    )
+
+    assert first.idempotent is False
+    assert second.idempotent is True
+    assert second.audit_event_id == first.audit_event_id
+    audit = ledger.list_operation_audit_events(scope="queue", subject_id="queue_001")
+    assert [event["event_type"] for event in audit] == ["stale_claim.recovered"]
+
+
+def test_completed_and_dead_letter_items_are_not_stale_recovered(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    seed_claimed_run(ledger)
+    ledger.complete_queue_item(
+        queue_item_id="queue_001",
+        run_id="run_001",
+        worker_id="worker-a",
+    )
+    service = OperationalControlService(ledger)
+
+    with pytest.raises(StaleClaimRecoveryRejectedError, match="not claimed"):
+        service.recover_stale_claimed_item(
+            queue_item_id="queue_001",
+            actor="operator-a",
+            reason="already completed",
+            now=NOW + timedelta(minutes=20),
+            stale_after_seconds=15 * 60,
+        )
+
+    dead_path = tmp_path / "dead"
+    dead_path.mkdir()
+    ledger = make_ledger(dead_path)
+    seed_dead_letter(ledger)
+    service = OperationalControlService(ledger)
+    with pytest.raises(StaleClaimRecoveryRejectedError, match="not claimed"):
+        service.recover_stale_claimed_item(
+            queue_item_id="queue_001",
+            actor="operator-a",
+            reason="already dead-lettered",
+            now=NOW + timedelta(minutes=20),
+            stale_after_seconds=15 * 60,
+        )
 
 
 def test_missing_artifact_replay_rejection(tmp_path: Path) -> None:

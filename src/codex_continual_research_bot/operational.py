@@ -25,6 +25,28 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _normalize_timestamp(value: datetime | None = None) -> str:
+    current = value or _utcnow()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return current.astimezone(timezone.utc).isoformat()
+
+
+def _parse_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _age_seconds(start: datetime | None, now: datetime) -> int | None:
+    if start is None:
+        return None
+    return max(0, int((now - start).total_seconds()))
+
+
 def _canonical_json(data: object) -> str:
     return json.dumps(data, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
@@ -53,6 +75,13 @@ class RepairJobRejectedError(OperationalControlError):
     """Raised when repair would not be explicit and auditable."""
 
 
+class StaleClaimRecoveryRejectedError(OperationalControlError):
+    """Raised when a claimed queue item is not safe to recover."""
+
+
+DEFAULT_STALE_CLAIM_SECONDS = 15 * 60
+
+
 @dataclass(frozen=True)
 class ReplayResult:
     run_id: str
@@ -69,6 +98,16 @@ class RepairJobResult:
     repair_queue_item_id: str
     repair_run_id: str
     audit_event_id: int
+
+
+@dataclass(frozen=True)
+class StaleClaimRecoveryResult:
+    queue_item_id: str
+    action: str
+    state: str
+    stale: bool
+    idempotent: bool
+    audit_event_id: int | None
 
 
 @dataclass(frozen=True)
@@ -165,10 +204,216 @@ class OperationalControlService:
                 """,
                 params,
             ).fetchall()
+        stale_claims = self.list_claimed_queue_items(topic_id=topic_id)
         return {
             "state_counts": {row["state"]: row["count"] for row in counts},
             "dead_letters": self._ledger.list_dead_letter_queue(topic_id=topic_id),
+            "claimed": stale_claims,
+            "stale_claimed": [item for item in stale_claims if item["stale"]],
         }
+
+    def list_claimed_queue_items(
+        self,
+        *,
+        topic_id: str | None = None,
+        now: datetime | None = None,
+        stale_after_seconds: int = DEFAULT_STALE_CLAIM_SECONDS,
+    ) -> list[dict[str, Any]]:
+        clauses = ["queue_items.state = ?"]
+        params: list[Any] = [QueueJobState.CLAIMED.value]
+        if topic_id is not None:
+            clauses.append("queue_items.topic_id = ?")
+            params.append(topic_id)
+        where = " AND ".join(clauses)
+        with self._ledger.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    queue_items.*,
+                    runs.id AS run_id
+                FROM queue_items
+                LEFT JOIN runs ON runs.queue_item_id = queue_items.id
+                WHERE {where}
+                ORDER BY queue_items.claimed_at ASC, queue_items.id ASC
+                """,
+                params,
+            ).fetchall()
+            return [
+                self._claimed_queue_item_view(
+                    connection=connection,
+                    row=dict(row),
+                    now=now,
+                    stale_after_seconds=stale_after_seconds,
+                )
+                for row in rows
+            ]
+
+    def recover_stale_claimed_item(
+        self,
+        *,
+        queue_item_id: str,
+        actor: str,
+        reason: str,
+        action: str = "retry",
+        now: datetime | None = None,
+        stale_after_seconds: int = DEFAULT_STALE_CLAIM_SECONDS,
+    ) -> StaleClaimRecoveryResult:
+        if action not in {"retry", "dead_letter"}:
+            raise StaleClaimRecoveryRejectedError(
+                f"unsupported stale claim recovery action {action}"
+            )
+
+        current_time = _normalize_timestamp(now)
+        with self._ledger.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    """
+                    SELECT
+                        queue_items.*,
+                        runs.id AS run_id
+                    FROM queue_items
+                    LEFT JOIN runs ON runs.queue_item_id = queue_items.id
+                    WHERE queue_items.id = ?
+                    """,
+                    (queue_item_id,),
+                ).fetchone()
+                if row is None:
+                    raise KeyError(f"queue item {queue_item_id} does not exist")
+
+                current = dict(row)
+                if current["state"] != QueueJobState.CLAIMED.value:
+                    previous = self._previous_stale_recovery(
+                        connection=connection,
+                        queue_item_id=queue_item_id,
+                        action=action,
+                    )
+                    if previous is not None:
+                        connection.execute("COMMIT")
+                        return StaleClaimRecoveryResult(
+                            queue_item_id=queue_item_id,
+                            action=action,
+                            state=str(current["state"]),
+                            stale=False,
+                            idempotent=True,
+                            audit_event_id=int(previous["id"]),
+                        )
+                    raise StaleClaimRecoveryRejectedError(
+                        f"queue item {queue_item_id} is {current['state']}, not claimed"
+                    )
+
+                claim = self._claimed_queue_item_view(
+                    connection=connection,
+                    row=current,
+                    now=now,
+                    stale_after_seconds=stale_after_seconds,
+                )
+                if not claim["stale"]:
+                    raise StaleClaimRecoveryRejectedError(
+                        f"queue item {queue_item_id} is claimed but not stale"
+                    )
+
+                target_state = (
+                    QueueJobState.QUEUED.value
+                    if action == "retry"
+                    else QueueJobState.DEAD_LETTER.value
+                )
+                failure_detail = (
+                    "stale claimed queue item recovered by operator: "
+                    f"{reason}"
+                )
+                cursor = connection.execute(
+                    """
+                    UPDATE queue_items
+                    SET state = ?,
+                        available_at = ?,
+                        claimed_by = NULL,
+                        claimed_at = NULL,
+                        last_failure_code = ?,
+                        last_failure_detail = ?,
+                        last_failure_retryable = ?,
+                        last_failure_human_review = ?,
+                        updated_at = ?
+                    WHERE id = ? AND state = ?
+                    """,
+                    (
+                        target_state,
+                        current_time,
+                        FailureCode.RUNNER_HOST_UNAVAILABLE.value,
+                        failure_detail,
+                        1,
+                        1 if action == "dead_letter" else 0,
+                        current_time,
+                        queue_item_id,
+                        QueueJobState.CLAIMED.value,
+                    ),
+                )
+                if cursor.rowcount == 0:
+                    raise StaleClaimRecoveryRejectedError(
+                        f"queue item {queue_item_id} moved before stale recovery"
+                    )
+                if current.get("run_id") is not None:
+                    run_status = "queued" if action == "retry" else "dead_letter"
+                    connection.execute(
+                        """
+                        UPDATE runs
+                        SET status = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (run_status, current_time, current["run_id"]),
+                    )
+                event_type = (
+                    "stale_claim.recovered"
+                    if action == "retry"
+                    else "stale_claim.dead_lettered"
+                )
+                audit = connection.execute(
+                    """
+                    INSERT INTO operation_audit_events(
+                        scope,
+                        subject_id,
+                        event_type,
+                        actor,
+                        payload_json,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    RETURNING id
+                    """,
+                    (
+                        "queue",
+                        queue_item_id,
+                        event_type,
+                        actor,
+                        json.dumps(
+                            {
+                                "action": action,
+                                "reason": reason,
+                                "run_id": current.get("run_id"),
+                                "topic_id": current["topic_id"],
+                                "previous_claimed_by": current["claimed_by"],
+                                "previous_claimed_at": current["claimed_at"],
+                                "stale_after_seconds": stale_after_seconds,
+                                "stale_basis": claim["stale_basis"],
+                                "stale_age_seconds": claim["stale_age_seconds"],
+                            },
+                            sort_keys=True,
+                        ),
+                        current_time,
+                    ),
+                ).fetchone()
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+
+        return StaleClaimRecoveryResult(
+            queue_item_id=queue_item_id,
+            action=action,
+            state=target_state,
+            stale=True,
+            idempotent=False,
+            audit_event_id=int(audit["id"]),
+        )
 
     def session_dashboard(self, *, session_id: str | None = None) -> dict[str, Any]:
         clauses: list[str] = []
@@ -360,6 +605,100 @@ class OperationalControlService:
             reason=reason,
             available_at=available_at,
         )
+
+    def _claimed_queue_item_view(
+        self,
+        *,
+        connection: Any,
+        row: dict[str, Any],
+        now: datetime | None,
+        stale_after_seconds: int,
+    ) -> dict[str, Any]:
+        current_time = now or _utcnow()
+        run_id = row.get("run_id") or row.get("requested_run_id")
+        lease = None
+        if row.get("claimed_by") is not None and run_id is not None:
+            lease_row = connection.execute(
+                """
+                SELECT *
+                FROM session_leases
+                WHERE holder = ? AND run_id = ?
+                ORDER BY heartbeat_at DESC, leased_at DESC
+                LIMIT 1
+                """,
+                (row["claimed_by"], run_id),
+            ).fetchone()
+            lease = None if lease_row is None else dict(lease_row)
+
+        claimed_at = _parse_timestamp(row.get("claimed_at"))
+        claim_age = _age_seconds(claimed_at, current_time)
+        heartbeat_at = _parse_timestamp(None if lease is None else lease.get("heartbeat_at"))
+        heartbeat_age = _age_seconds(heartbeat_at, current_time)
+        leased_at = _parse_timestamp(None if lease is None else lease.get("leased_at"))
+        lease_age = _age_seconds(leased_at, current_time)
+        lease_expires_at = _parse_timestamp(None if lease is None else lease.get("expires_at"))
+        lease_expired = lease_expires_at is not None and lease_expires_at <= current_time
+
+        if lease is not None and not lease_expired:
+            stale_basis = "worker_heartbeat"
+            basis_age = heartbeat_age if heartbeat_age is not None else lease_age
+            stale = basis_age is not None and basis_age >= stale_after_seconds
+        elif claim_age is None:
+            stale_basis = "claimed_at"
+            basis_age = None
+            stale = True
+        else:
+            stale_basis = "claimed_at"
+            basis_age = claim_age
+            stale = claim_age >= stale_after_seconds
+
+        return {
+            "queue_item_id": row["id"],
+            "topic_id": row["topic_id"],
+            "requested_run_id": row["requested_run_id"],
+            "run_id": row.get("run_id"),
+            "claimed_by": row.get("claimed_by"),
+            "claimed_at": row.get("claimed_at"),
+            "claim_age_seconds": claim_age,
+            "worker_heartbeat_at": None if lease is None else lease.get("heartbeat_at"),
+            "worker_heartbeat_age_seconds": heartbeat_age,
+            "worker_lease_age_seconds": lease_age,
+            "worker_lease_expires_at": None if lease is None else lease.get("expires_at"),
+            "has_active_worker_lease": lease is not None and not lease_expired,
+            "stale_after_seconds": stale_after_seconds,
+            "stale_basis": stale_basis,
+            "stale_age_seconds": basis_age,
+            "stale": stale,
+        }
+
+    def _previous_stale_recovery(
+        self,
+        *,
+        connection: Any,
+        queue_item_id: str,
+        action: str,
+    ) -> dict[str, Any] | None:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM operation_audit_events
+            WHERE scope = ?
+              AND subject_id = ?
+              AND event_type IN (?, ?)
+            ORDER BY id DESC
+            """,
+            (
+                "queue",
+                queue_item_id,
+                "stale_claim.recovered",
+                "stale_claim.dead_lettered",
+            ),
+        ).fetchall()
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            if payload.get("action") == action:
+                return dict(row)
+        return None
 
     def emit_repeated_auth_failure_alert(
         self,
