@@ -14,6 +14,9 @@ from codex_continual_research_bot.contracts import (
     QueueJobKind,
     QueueJobState,
 )
+from codex_continual_research_bot.failure_analysis import (
+    summarize_malformed_proposal_failures,
+)
 from codex_continual_research_bot.persistence import (
     DuplicateIdempotencyKeyError,
     SQLitePersistenceLedger,
@@ -165,9 +168,13 @@ class OperationalControlService:
                 """,
                 params,
             ).fetchall()
+        dead_letters = self._ledger.list_dead_letter_queue(topic_id=topic_id)
         return {
             "state_counts": {row["state"]: row["count"] for row in counts},
-            "dead_letters": self._ledger.list_dead_letter_queue(topic_id=topic_id),
+            "dead_letters": dead_letters,
+            "malformed_proposal_failure_summary": summarize_malformed_proposal_failures(
+                dead_letters
+            ),
         }
 
     def session_dashboard(self, *, session_id: str | None = None) -> dict[str, Any]:

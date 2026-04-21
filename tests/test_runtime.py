@@ -357,6 +357,13 @@ def test_malformed_json_proposal_is_repaired_before_validation(
 
     assert len(launcher.invocations) == 2
     assert result.proposal.execution_meta.repair_attempts == 1
+    assert "Validator-safe ProposalBundle rules" in launcher.invocations[0].prompt
+    repair_prompt = launcher.invocations[1].prompt
+    assert 'action is "supersede"' in repair_prompt
+    assert "supersedes_hypothesis_id" in repair_prompt
+    assert "temporal_scope" in repair_prompt
+    assert "argument target_hypothesis_id" in repair_prompt
+    assert "next_actions" in repair_prompt
     output_validated = ledger.list_run_events("run_001")[-2]
     assert output_validated.event_type == RuntimeEventType.OUTPUT_VALIDATED
     assert output_validated.payload.repair_attempts == 1
@@ -395,6 +402,56 @@ def test_invalid_enum_and_missing_required_field_are_repaired(
     messages = [violation["message"] for violation in failure_artifact["violations"]]
     assert any("Field required" in message for message in messages)
     assert any("Input should be" in message for message in messages)
+
+
+def test_missing_supersedes_hypothesis_id_is_repaired_when_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    ledger, intent = make_intent(tmp_path)
+    invalid_payload = proposal_payload_with_update(
+        lambda payload: payload["revision_proposals"][0].update(
+            {
+                "hypothesis_id": "hyp_002",
+                "action": "supersede",
+                "supersedes_hypothesis_id": None,
+            }
+        )
+    )
+    repaired_payload = proposal_payload_with_update(
+        lambda payload: payload["revision_proposals"][0].update(
+            {
+                "hypothesis_id": "hyp_002",
+                "action": "supersede",
+                "supersedes_hypothesis_id": "hyp_001",
+            }
+        )
+    )
+    launcher = FakeLauncher(
+        stdout_lines=(raw_event("turn.started"),),
+        final_payloads=(invalid_payload, repaired_payload),
+    )
+
+    result = CodexRuntimeCoordinator(
+        ledger,
+        make_config(tmp_path),
+        launcher=launcher,
+    ).execute(intent)
+
+    assert len(launcher.invocations) == 2
+    assert result.proposal.execution_meta.repair_attempts == 1
+    failure_artifact = json.loads(
+        (result.artifacts_dir / "validation_failure_000.json").read_text()
+    )
+    assert failure_artifact["repairable"] is True
+    assert failure_artifact["violations"][0]["location"] == (
+        "revision_proposals[0].supersedes_hypothesis_id"
+    )
+    assert (
+        result.proposal.revision_proposals[0].supersedes_hypothesis_id
+        == "hyp_001"
+    )
 
 
 def test_unresolved_citation_placeholder_is_rejected_and_quarantined(

@@ -53,6 +53,8 @@ Human summaries must include:
 - uncertainty
 - backend state update status when a run is shown
 - queue or next-action state
+- malformed proposal failure summaries grouped by contract type when queue or
+  ops views include malformed proposal dead letters
 - graph visualization disclaimer when graph or memory state is shown
 
 JSON output uses `fixtures/ux_read_models.json`, which parses as

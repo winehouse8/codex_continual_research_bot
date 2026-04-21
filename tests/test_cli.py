@@ -226,7 +226,7 @@ def test_queue_dead_letter_retry_flow_shows_failure_classification(tmp_path: Pat
     SQLitePersistenceLedger(tmp_path / "crb.sqlite3").record_queue_dead_letter(
         queue_item_id=queue_item_id,
         failure_code=FailureCode.MALFORMED_PROPOSAL.value,
-        detail="proposal failed canonicalization",
+        detail="revision for hyp_002: supersede action requires supersedes_hypothesis_id",
         retryable=False,
         human_review_required=True,
     )
@@ -236,6 +236,21 @@ def test_queue_dead_letter_retry_flow_shows_failure_classification(tmp_path: Pat
     assert code == 0
     assert dead.data["queue"]["failure"]["retryable"] is False
     assert dead.data["queue"]["failure"]["human_review_required"] is True
+    assert dead.data["queue"]["failure"]["failure_type"] == (
+        "supersede_missing_predecessor"
+    )
+    assert dead.data["malformed_proposal_failure_summary"] == {
+        "total": 1,
+        "by_type": {"supersede_missing_predecessor": 1},
+    }
+
+    code, output, _ = run_cli(["queue", "list", "--json"], backend)
+    queue_list = parsed_json(output)
+    assert code == 0
+    assert queue_list.data["malformed_proposal_failure_summary"] == {
+        "total": 1,
+        "by_type": {"supersede_missing_predecessor": 1},
+    }
 
     code, output, _ = run_cli(
         ["queue", "retry", queue_item_id, "--reason", "operator approved repair", "--json"],

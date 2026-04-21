@@ -15,6 +15,7 @@ from codex_continual_research_bot.contracts import (
     ProposalBundle,
     QueueJob,
     QueueJobKind,
+    QueuePayload,
     QueueJobState,
     RunIntent,
     RunLifecycleState,
@@ -31,6 +32,7 @@ from codex_continual_research_bot.persistence import (
     SessionLeaseRecord,
     SQLitePersistenceLedger,
 )
+from codex_continual_research_bot.output_validation import append_proposal_safety_clause
 from codex_continual_research_bot.runtime import (
     CodexRuntimeError,
     CodexTransportTimeoutError,
@@ -555,6 +557,66 @@ def test_repeated_run_stagnation_is_detected_before_enqueue(
     assert "stagnation threshold" in decisions[0].reason
     assert ledger.fetch_next_claimable_queue_item(now=NOW) is None
     assert ledger.fetch_queue_item(decisions[0].queue_item_id or "") is None
+
+
+def test_scheduler_avoids_repeated_identical_malformed_follow_up(
+    tmp_path: Path,
+) -> None:
+    objective = append_proposal_safety_clause(
+        "Scheduled competition refresh for topic_001: "
+        "no recent challenger generation, no recent revision pressure"
+    )
+    dead_letter_job = make_queue_job(
+        queue_item_id="scheduled_queue_dead",
+        run_id="scheduled_run_dead",
+    ).model_copy(
+        update={
+            "payload": QueuePayload(
+                initiator="scheduler",
+                objective=objective,
+                selected_queue_item_ids=["scheduled_queue_dead"],
+            )
+        }
+    )
+    ledger = make_ledger(tmp_path, dead_letter_job)
+    ledger.record_queue_dead_letter(
+        queue_item_id="scheduled_queue_dead",
+        failure_code=FailureCode.MALFORMED_PROPOSAL.value,
+        detail="argument arg_001: missing claim references claim_missing",
+        retryable=False,
+        human_review_required=True,
+    )
+    manager = bootstrap_manager(tmp_path, ledger)
+    service = make_service(
+        tmp_path,
+        ledger,
+        manager,
+        FakeScheduledRuntime(make_valid_proposal()),
+    )
+
+    decisions = service.enqueue_due_runs(
+        [
+            TopicScheduleCandidate(
+                topic_id="topic_001",
+                next_run_after=NOW,
+                current_best_hypothesis_count=1,
+                challenger_target_count=1,
+                recent_challenger_count=0,
+                recent_revision_count=0,
+                unresolved_conflict_count=0,
+                open_question_count=0,
+                queued_user_input_count=0,
+                support_challenge_imbalance=0.0,
+                consecutive_stagnant_runs=0,
+            )
+        ],
+        now=NOW,
+    )
+
+    assert decisions[0].action == ScheduledRunAction.DEFERRED
+    assert decisions[0].failure_code == FailureCode.MALFORMED_PROPOSAL
+    assert "identical malformed_proposal follow-up" in decisions[0].reason
+    assert ledger.fetch_next_claimable_queue_item(now=NOW) is None
 
 
 def test_retry_after_transient_transport_failure_reuses_same_run(

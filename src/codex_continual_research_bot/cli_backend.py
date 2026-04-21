@@ -13,6 +13,7 @@ from typing import Any
 
 from codex_continual_research_bot.cli_contracts import CliBackendError
 from codex_continual_research_bot.contracts import (
+    FailureCode,
     HypothesisRef,
     QueueJob,
     QueueJobKind,
@@ -20,10 +21,15 @@ from codex_continual_research_bot.contracts import (
     QueuePayload,
     TopicSnapshot,
 )
+from codex_continual_research_bot.failure_analysis import (
+    classify_malformed_proposal_failure,
+    summarize_malformed_proposal_failures,
+)
 from codex_continual_research_bot.operational import (
     OperationalControlError,
     OperationalControlService,
 )
+from codex_continual_research_bot.output_validation import append_proposal_safety_clause
 from codex_continual_research_bot.graph_visualization import (
     build_graph_export_artifact,
     render_graph_artifact,
@@ -245,7 +251,9 @@ class LocalBackendGateway:
             run_id=run_id,
             kind=QueueJobKind.RUN_EXECUTE,
             idempotency_key=idempotency_key,
-            objective=f"Run interactive research for CLI input: {user_input}",
+            objective=append_proposal_safety_clause(
+                f"Run interactive research for CLI input: {user_input}"
+            ),
             priority=100,
             max_attempts=1,
             summary=f"Enqueued run {run_id}.",
@@ -306,7 +314,9 @@ class LocalBackendGateway:
             run_id=run_id,
             kind=QueueJobKind.RUN_RESUME,
             idempotency_key=f"run.resume:{run_id}",
-            objective=f"Resume interrupted run {run_id} through backend idempotency state.",
+            objective=append_proposal_safety_clause(
+                f"Resume interrupted run {run_id} through backend idempotency state."
+            ),
             priority=90,
             max_attempts=1,
             summary=f"Submitted resume request for {run_id}.",
@@ -325,11 +335,15 @@ class LocalBackendGateway:
             "items": items,
             "retryable_failure_count": retryable,
             "human_review_failure_count": human_review,
+            "malformed_proposal_failure_summary": summarize_malformed_proposal_failures(
+                rows
+            ),
             "human": [
                 (
                     f"- {item['queue_item_id']} {item['kind']} ({item['state']}): "
                     f"retryable={item['failure'].get('retryable', False)} "
                     f"human_review={item['failure'].get('human_review_required', False)}"
+                    f"{_failure_type_suffix(item['failure'])}"
                 )
                 for item in items
             ]
@@ -378,10 +392,14 @@ class LocalBackendGateway:
             "summary": f"Queue item {queue_item_id} is {view['state']}.",
             "queue_item_id": queue_item_id,
             "queue": view,
+            "malformed_proposal_failure_summary": summarize_malformed_proposal_failures(
+                [row]
+            ),
             "human": [
                 f"Queue item: {queue_item_id}",
                 f"State: {view['state']}",
                 f"Failure code: {view['failure'].get('failure_code', 'none')}",
+                f"Failure type: {view['failure'].get('failure_type', 'none')}",
                 f"Retryable: {view['failure'].get('retryable', False)}",
                 f"Human review required: {view['failure'].get('human_review_required', False)}",
             ],
@@ -508,11 +526,18 @@ class LocalBackendGateway:
             "db_path": str(self.db_path),
             "topic_count": len(rows),
             "queue": queue,
+            "malformed_proposal_failure_summary": queue[
+                "malformed_proposal_failure_summary"
+            ],
             "human": [
                 f"Database: {self.db_path}",
                 f"Topics: {len(rows)}",
                 f"Queue states: {queue['state_counts']}",
                 f"Dead letters: {len(queue['dead_letters'])}",
+                (
+                    "Malformed proposal failures: "
+                    f"{queue['malformed_proposal_failure_summary']['by_type']}"
+                ),
             ],
         }
 
@@ -729,6 +754,11 @@ class LocalBackendGateway:
         return {
             "failure_code": row["last_failure_code"],
             "detail": row["last_failure_detail"],
+            "failure_type": (
+                classify_malformed_proposal_failure(row["last_failure_detail"])
+                if row["last_failure_code"] == FailureCode.MALFORMED_PROPOSAL.value
+                else None
+            ),
             "retryable": bool(row["last_failure_retryable"]),
             "human_review_required": bool(row["last_failure_human_review"]),
         }
@@ -756,3 +786,10 @@ class LocalBackendGateway:
             graph_write=self._latest_graph(topic_id),
             generated_at=_utcnow(),
         )
+
+
+def _failure_type_suffix(failure: dict[str, object]) -> str:
+    failure_type = failure.get("failure_type")
+    if not failure_type:
+        return ""
+    return f" failure_type={failure_type}"
