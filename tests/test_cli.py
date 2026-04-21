@@ -3,18 +3,20 @@ from __future__ import annotations
 import ast
 import json
 import shlex
+from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 
 from codex_continual_research_bot.cli import build_parser, main
 from codex_continual_research_bot.cli_backend import LocalBackendGateway
 from codex_continual_research_bot.cli_contracts import CliResult
-from codex_continual_research_bot.contracts import FailureCode
+from codex_continual_research_bot.contracts import FailureCode, QueueJobState
 from codex_continual_research_bot.persistence import SQLitePersistenceLedger
 from codex_continual_research_bot.ux_contracts import extract_crb_examples
 
 
 ROOT = Path(__file__).resolve().parent.parent
+STALE_CLAIMED_AT = datetime(2000, 1, 1, 12, 0, tzinfo=timezone.utc)
 
 
 def run_cli(argv: list[str], backend: LocalBackendGateway) -> tuple[int, str, str]:
@@ -26,6 +28,29 @@ def run_cli(argv: list[str], backend: LocalBackendGateway) -> tuple[int, str, st
 
 def parsed_json(output: str) -> CliResult:
     return CliResult.model_validate(json.loads(output))
+
+
+def force_stale_claim(
+    ledger: SQLitePersistenceLedger,
+    *,
+    queue_item_id: str,
+    run_id: str,
+) -> None:
+    ledger.claim_queue_item_for_run(
+        queue_item_id=queue_item_id,
+        worker_id="worker-stale",
+        run_id=run_id,
+        mode="scheduled",
+    )
+    with ledger.connect() as connection, connection:
+        connection.execute(
+            """
+            UPDATE queue_items
+            SET claimed_at = ?
+            WHERE id = ?
+            """,
+            (STALE_CLAIMED_AT.isoformat(), queue_item_id),
+        )
 
 
 def test_cli_help_lists_phase13_commands() -> None:
@@ -244,6 +269,162 @@ def test_queue_dead_letter_retry_flow_shows_failure_classification(tmp_path: Pat
     retried = parsed_json(output)
     assert code == 0
     assert retried.data["queue"]["state"] == "queued"
+
+
+def test_queue_list_and_ops_health_warn_about_stale_claimed_items(tmp_path: Path) -> None:
+    backend = LocalBackendGateway(db_path=tmp_path / "crb.sqlite3", workspace_root=tmp_path)
+    run_cli(["init"], backend)
+    run_cli(
+        [
+            "topic",
+            "create",
+            "Codex auth boundary",
+            "--objective",
+            "Track session ownership risk",
+        ],
+        backend,
+    )
+    _, output, _ = run_cli(
+        [
+            "run",
+            "start",
+            "topic_codex_auth_boundary",
+            "--input",
+            "question: can stale sessions be retried?",
+            "--json",
+        ],
+        backend,
+    )
+    started = parsed_json(output)
+    queue_item_id = str(started.data["queue_item_id"])
+    run_id = str(started.data["run_id"])
+    force_stale_claim(
+        SQLitePersistenceLedger(tmp_path / "crb.sqlite3"),
+        queue_item_id=queue_item_id,
+        run_id=run_id,
+    )
+
+    code, output, _ = run_cli(
+        ["queue", "list", "--topic", "topic_codex_auth_boundary", "--json"],
+        backend,
+    )
+    listed = parsed_json(output)
+    assert code == 0
+    assert listed.data["stale_claimed_count"] == 1
+    assert listed.data["items"][0]["claim"]["stale"] is True
+    assert listed.data["items"][0]["claim"]["claimed_by"] == "worker-stale"
+
+    code, output, _ = run_cli(["ops", "health", "--json"], backend)
+    health = parsed_json(output)
+    assert code == 0
+    assert health.data["stale_claimed_count"] == 1
+    assert "stale claimed queue item" in health.data["warnings"][0]
+
+
+def test_queue_retry_recovers_stale_claimed_item_and_is_idempotent(tmp_path: Path) -> None:
+    backend = LocalBackendGateway(db_path=tmp_path / "crb.sqlite3", workspace_root=tmp_path)
+    run_cli(["init"], backend)
+    run_cli(
+        [
+            "topic",
+            "create",
+            "Codex auth boundary",
+            "--objective",
+            "Track session ownership risk",
+        ],
+        backend,
+    )
+    _, output, _ = run_cli(
+        [
+            "run",
+            "start",
+            "topic_codex_auth_boundary",
+            "--input",
+            "question: can stale sessions be retried?",
+            "--json",
+        ],
+        backend,
+    )
+    started = parsed_json(output)
+    queue_item_id = str(started.data["queue_item_id"])
+    run_id = str(started.data["run_id"])
+    ledger = SQLitePersistenceLedger(tmp_path / "crb.sqlite3")
+    force_stale_claim(
+        ledger,
+        queue_item_id=queue_item_id,
+        run_id=run_id,
+    )
+
+    code, output, _ = run_cli(
+        ["queue", "retry", queue_item_id, "--reason", "worker process exited", "--json"],
+        backend,
+    )
+    retried = parsed_json(output)
+    assert code == 0
+    assert retried.data["queue"]["state"] == QueueJobState.QUEUED.value
+    assert retried.data["recovery"]["idempotent"] is False
+    audit = ledger.list_operation_audit_events(scope="queue", subject_id=queue_item_id)
+    assert audit[0]["event_type"] == "stale_claim.recovered"
+
+    code, output, _ = run_cli(
+        ["queue", "recover-stale", queue_item_id, "--reason", "repeat", "--json"],
+        backend,
+    )
+    duplicate = parsed_json(output)
+    assert code == 0
+    assert duplicate.data["recovery"]["idempotent"] is True
+
+
+def test_recover_stale_can_dead_letter_claimed_item(tmp_path: Path) -> None:
+    backend = LocalBackendGateway(db_path=tmp_path / "crb.sqlite3", workspace_root=tmp_path)
+    run_cli(["init"], backend)
+    run_cli(
+        [
+            "topic",
+            "create",
+            "Codex auth boundary",
+            "--objective",
+            "Track session ownership risk",
+        ],
+        backend,
+    )
+    _, output, _ = run_cli(
+        [
+            "run",
+            "start",
+            "topic_codex_auth_boundary",
+            "--input",
+            "question: should stale work be quarantined?",
+            "--json",
+        ],
+        backend,
+    )
+    started = parsed_json(output)
+    queue_item_id = str(started.data["queue_item_id"])
+    run_id = str(started.data["run_id"])
+    force_stale_claim(
+        SQLitePersistenceLedger(tmp_path / "crb.sqlite3"),
+        queue_item_id=queue_item_id,
+        run_id=run_id,
+    )
+
+    code, output, _ = run_cli(
+        [
+            "queue",
+            "recover-stale",
+            queue_item_id,
+            "--action",
+            "dead_letter",
+            "--reason",
+            "operator quarantine",
+            "--json",
+        ],
+        backend,
+    )
+    recovered = parsed_json(output)
+    assert code == 0
+    assert recovered.data["queue"]["state"] == QueueJobState.DEAD_LETTER.value
+    assert recovered.data["recovery"]["action"] == "dead_letter"
 
 
 def test_json_result_schema_for_memory_and_ops(tmp_path: Path) -> None:

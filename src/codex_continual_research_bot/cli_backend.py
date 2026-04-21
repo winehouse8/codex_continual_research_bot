@@ -21,8 +21,10 @@ from codex_continual_research_bot.contracts import (
     TopicSnapshot,
 )
 from codex_continual_research_bot.operational import (
+    DEFAULT_STALE_CLAIM_SECONDS,
     OperationalControlError,
     OperationalControlService,
+    StaleClaimRecoveryRejectedError,
 )
 from codex_continual_research_bot.graph_visualization import (
     build_graph_export_artifact,
@@ -314,30 +316,76 @@ class LocalBackendGateway:
 
     def queue_list(self, *, topic_id: str | None) -> dict[str, object]:
         rows = self._queue_items(topic_id=topic_id)
-        items = [self._queue_view(row) for row in rows]
+        claims = {
+            claim["queue_item_id"]: claim
+            for claim in OperationalControlService(
+                self._initialized_ledger()
+            ).list_claimed_queue_items(topic_id=topic_id)
+        }
+        items = [self._queue_view(row, claim=claims.get(row["id"])) for row in rows]
         retryable = sum(1 for item in items if item["failure"].get("retryable") is True)
         human_review = sum(
             1 for item in items if item["failure"].get("human_review_required") is True
         )
+        stale_claimed = [item for item in items if item["claim"].get("stale") is True]
         return {
             "summary": f"Found {len(items)} queue item(s).",
             "topic_id": topic_id,
             "items": items,
             "retryable_failure_count": retryable,
             "human_review_failure_count": human_review,
+            "stale_claimed_count": len(stale_claimed),
+            "stale_claimed": stale_claimed,
             "human": [
-                (
-                    f"- {item['queue_item_id']} {item['kind']} ({item['state']}): "
-                    f"retryable={item['failure'].get('retryable', False)} "
-                    f"human_review={item['failure'].get('human_review_required', False)}"
-                )
-                for item in items
+                self._queue_human_line(item) for item in items
             ]
             or ["No queue items found."],
         }
 
     def queue_retry(self, *, queue_item_id: str, reason: str) -> dict[str, object]:
-        service = OperationalControlService(self._initialized_ledger())
+        ledger = self._initialized_ledger()
+        row = ledger.fetch_queue_item(queue_item_id)
+        if row is None:
+            raise CliBackendError(
+                failure_code="queue_item_not_found",
+                detail=f"queue item {queue_item_id} does not exist",
+                retryable=False,
+                human_review_required=False,
+            )
+        service = OperationalControlService(ledger)
+        if row["state"] == QueueJobState.CLAIMED.value:
+            try:
+                recovery = service.recover_stale_claimed_item(
+                    queue_item_id=queue_item_id,
+                    actor="cli",
+                    reason=reason,
+                    action="retry",
+                    now=_utcnow(),
+                )
+            except (KeyError, StaleClaimRecoveryRejectedError) as exc:
+                raise CliBackendError(
+                    failure_code="queue_retry_rejected",
+                    detail=str(exc),
+                    retryable=False,
+                    human_review_required=True,
+                ) from exc
+            item = ledger.fetch_queue_item(queue_item_id)
+            return {
+                "summary": f"Recovered stale claimed queue item {queue_item_id}.",
+                "queue_item_id": queue_item_id,
+                "queue": None if item is None else self._queue_view(item),
+                "recovery": {
+                    "action": recovery.action,
+                    "state": recovery.state,
+                    "idempotent": recovery.idempotent,
+                    "audit_event_id": recovery.audit_event_id,
+                },
+                "human": [
+                    f"Queue item: {queue_item_id}",
+                    "State: queued",
+                    f"Reason: {reason}",
+                ],
+            }
         try:
             service.recover_dead_letter(
                 queue_item_id=queue_item_id,
@@ -360,6 +408,49 @@ class LocalBackendGateway:
             "human": [
                 f"Queue item: {queue_item_id}",
                 "State: queued",
+                f"Reason: {reason}",
+            ],
+        }
+
+    def queue_recover_stale(
+        self,
+        *,
+        queue_item_id: str,
+        reason: str,
+        action: str,
+    ) -> dict[str, object]:
+        ledger = self._initialized_ledger()
+        service = OperationalControlService(ledger)
+        try:
+            recovery = service.recover_stale_claimed_item(
+                queue_item_id=queue_item_id,
+                actor="cli",
+                reason=reason,
+                action=action,
+                now=_utcnow(),
+            )
+        except (KeyError, StaleClaimRecoveryRejectedError) as exc:
+            raise CliBackendError(
+                failure_code="stale_claim_recovery_rejected",
+                detail=str(exc),
+                retryable=False,
+                human_review_required=True,
+            ) from exc
+        item = ledger.fetch_queue_item(queue_item_id)
+        return {
+            "summary": f"Recovered stale claimed queue item {queue_item_id}.",
+            "queue_item_id": queue_item_id,
+            "queue": None if item is None else self._queue_view(item),
+            "recovery": {
+                "action": recovery.action,
+                "state": recovery.state,
+                "idempotent": recovery.idempotent,
+                "audit_event_id": recovery.audit_event_id,
+            },
+            "human": [
+                f"Queue item: {queue_item_id}",
+                f"Action: {action}",
+                f"State: {recovery.state}",
                 f"Reason: {reason}",
             ],
         }
@@ -503,16 +594,33 @@ class LocalBackendGateway:
         ledger = self._initialized_ledger()
         queue = OperationalControlService(ledger).queue_dashboard()
         rows = self._topic_rows()
+        stale_claimed_count = len(queue["stale_claimed"])
+        warnings = [
+            (
+                f"stale claimed queue item {item['queue_item_id']} "
+                f"claimed_by={item['claimed_by']} "
+                f"stale_age={item['stale_age_seconds']}s"
+            )
+            for item in queue["stale_claimed"]
+        ]
         return {
-            "summary": "Backend health inspected.",
+            "summary": (
+                "Backend health inspected."
+                if stale_claimed_count == 0
+                else f"Backend health inspected with {stale_claimed_count} warning(s)."
+            ),
             "db_path": str(self.db_path),
             "topic_count": len(rows),
             "queue": queue,
+            "warnings": warnings,
+            "stale_claimed_count": stale_claimed_count,
             "human": [
                 f"Database: {self.db_path}",
                 f"Topics: {len(rows)}",
                 f"Queue states: {queue['state_counts']}",
                 f"Dead letters: {len(queue['dead_letters'])}",
+                f"Stale claimed: {stale_claimed_count}",
+                *[f"WARNING: {warning}" for warning in warnings],
             ],
         }
 
@@ -706,9 +814,15 @@ class LocalBackendGateway:
             ).fetchone()
         return None if row is None else dict(row)
 
-    def _queue_view(self, row: dict[str, Any]) -> dict[str, Any]:
+    def _queue_view(
+        self,
+        row: dict[str, Any],
+        *,
+        claim: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         payload = _row_json(row, "payload_json")
         failure = self._failure_view(row)
+        claim_view = claim or self._basic_claim_view(row)
         return {
             "queue_item_id": row["id"],
             "topic_id": row["topic_id"],
@@ -720,8 +834,49 @@ class LocalBackendGateway:
             "max_attempts": row["max_attempts"],
             "available_at": row["available_at"],
             "objective": payload.get("objective", ""),
+            "claim": claim_view,
             "failure": {} if failure is None else failure,
         }
+
+    def _basic_claim_view(self, row: dict[str, Any]) -> dict[str, object]:
+        if row.get("state") != QueueJobState.CLAIMED.value:
+            return {}
+        claimed_at = row.get("claimed_at")
+        claim_age_seconds = None
+        if isinstance(claimed_at, str) and claimed_at:
+            parsed = datetime.fromisoformat(claimed_at)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            claim_age_seconds = max(
+                0,
+                int((_utcnow() - parsed.astimezone(timezone.utc)).total_seconds()),
+            )
+        return {
+            "claimed_by": row.get("claimed_by"),
+            "claimed_at": claimed_at,
+            "claim_age_seconds": claim_age_seconds,
+            "stale_after_seconds": DEFAULT_STALE_CLAIM_SECONDS,
+            "stale": (
+                claim_age_seconds is not None
+                and claim_age_seconds >= DEFAULT_STALE_CLAIM_SECONDS
+            ),
+            "stale_basis": "claimed_at",
+            "stale_age_seconds": claim_age_seconds,
+        }
+
+    def _queue_human_line(self, item: dict[str, Any]) -> str:
+        line = (
+            f"- {item['queue_item_id']} {item['kind']} ({item['state']}): "
+            f"retryable={item['failure'].get('retryable', False)} "
+            f"human_review={item['failure'].get('human_review_required', False)}"
+        )
+        if item["claim"]:
+            line += (
+                f" claimed_by={item['claim'].get('claimed_by', 'none')} "
+                f"claim_age={item['claim'].get('claim_age_seconds', 'n/a')}s "
+                f"stale={item['claim'].get('stale', False)}"
+            )
+        return line
 
     def _failure_view(self, row: dict[str, Any]) -> dict[str, object] | None:
         if row.get("last_failure_code") is None:
