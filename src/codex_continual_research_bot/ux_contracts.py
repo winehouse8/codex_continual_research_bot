@@ -61,6 +61,8 @@ class GraphExportEdgeType(str, Enum):
     SUPPORTS = "supports"
     CHALLENGES = "challenges"
     SUPERSEDES = "supersedes"
+    WEAKENS = "weakens"
+    RETIRES = "retires"
     CONFLICTS_WITH = "conflicts_with"
     DERIVED_FROM = "derived_from"
     VISUALIZES = "visualizes"

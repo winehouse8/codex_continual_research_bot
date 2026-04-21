@@ -23,7 +23,7 @@ crb topic create "Codex auth boundary" --objective "Track session ownership risk
 crb run start topic_codex_auth_boundary --input "counterargument: warning-only stale sessions may be safe" --json
 crb topic show topic_codex_auth_boundary
 crb memory conflicts topic_codex_auth_boundary --json
-crb graph view topic_codex_auth_boundary --format html --output graph.html
+crb graph view topic_codex_auth_boundary --scope latest --format html --output graph.html
 ```
 
 `run start`의 JSON 응답에는 `run_id`와 `queue_item_id`가 들어 있습니다. 이후 상태 확인에는 그 값을 사용합니다.
@@ -76,10 +76,11 @@ CLI Summary / Graph Visualization
 | memory 요약 | `crb memory snapshot topic_codex_auth_boundary --json` |
 | conflict 보기 | `crb memory conflicts topic_codex_auth_boundary --json` |
 | hypothesis 보기 | `crb memory hypotheses topic_codex_auth_boundary --json` |
-| graph JSON export | `crb graph export topic_codex_auth_boundary --format json --output graph.json` |
+| graph JSON export | `crb graph export topic_codex_auth_boundary --scope latest --format json --output graph.json` |
+| graph history export | `crb graph export topic_codex_auth_boundary --scope history --format json --output graph-history.json` |
 | graph DOT export | `crb graph export topic_codex_auth_boundary --format dot --output graph.dot` |
 | graph Mermaid export | `crb graph export topic_codex_auth_boundary --format mermaid --output graph.mmd` |
-| graph HTML 보기 | `crb graph view topic_codex_auth_boundary --format html --output graph.html` |
+| graph HTML 보기 | `crb graph view topic_codex_auth_boundary --scope latest --format html --output graph.html` |
 | 운영 상태 확인 | `crb ops health --json` |
 | run audit | `crb ops audit "$run_id" --json` |
 | 완료 run replay 요청 | `crb ops replay "<completed-run-id>" --reason "operator replay audit" --json` |
@@ -102,10 +103,11 @@ crb queue dead-letter "$queue_item_id"
 crb memory snapshot topic_codex_auth_boundary --json
 crb memory conflicts topic_codex_auth_boundary --json
 crb memory hypotheses topic_codex_auth_boundary --json
-crb graph export topic_codex_auth_boundary --format json --output graph.json
+crb graph export topic_codex_auth_boundary --scope latest --format json --output graph.json
+crb graph export topic_codex_auth_boundary --scope history --format json --output graph-history.json
 crb graph export topic_codex_auth_boundary --format dot --output graph.dot
 crb graph export topic_codex_auth_boundary --format mermaid --output graph.mmd
-crb graph view topic_codex_auth_boundary --format html --output graph.html
+crb graph view topic_codex_auth_boundary --scope latest --format html --output graph.html
 crb ops health --json
 crb ops audit "$run_id" --json
 crb ops replay "<completed-run-id>" --reason "operator replay audit" --json
@@ -147,7 +149,7 @@ crb ops replay "<completed-run-id>" --reason "operator replay audit" --json
 
 ## Graph Visualization Walkthrough
 
-Graph export와 HTML view는 backend-owned canonical graph 또는 topic snapshot에서 만든 projection입니다. 검토, 공유, diff에는 유용하지만 not a source of truth입니다. Graph artifact의 authority notice는 backend graph and provenance ledgers가 authoritative하다는 점을 명시합니다.
+Graph export와 HTML view는 backend-owned canonical graph 또는 topic snapshot에서 만든 projection입니다. 검토, 공유, diff에는 유용하지만 not a source of truth입니다. Graph artifact의 authority notice는 backend graph and provenance ledgers가 authoritative하다는 점을 명시합니다. `--scope latest`는 최신 canonical graph write 하나를 보여주고, `--scope history`는 topic의 전체 canonical graph write history를 누적 projection해 run별 provenance와 revision relation을 함께 보여줍니다.
 
 | 파일 | 용도 |
 | --- | --- |

@@ -8,12 +8,17 @@ $ crb topic show topic_codex_auth_boundary
 Loaded topic topic_codex_auth_boundary.
 Topic: topic_codex_auth_boundary
 Snapshot: v1
+Memory source: topic_snapshot
+No canonical graph write found; using topic snapshot fallback.
+Graph export is not a source of truth; backend graph and provenance ledgers remain authoritative.
 Current best hypotheses:
 - Initial objective hypothesis: Track session ownership risk
 Challenger targets:
 - None selected yet.
 Active conflicts:
 - None recorded.
+Challenge candidates:
+- None projected.
 Queue:
 - No queued work.
 
