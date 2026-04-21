@@ -45,6 +45,7 @@ REQUIRED_COMMAND_IDS = {
     "ops.health",
     "ops.audit",
     "ops.replay",
+    "web.serve",
 }
 
 

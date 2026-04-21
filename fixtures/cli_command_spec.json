@@ -406,6 +406,28 @@
       "examples": [
         "crb ops replay \"<completed-run-id>\" --reason \"operator replay audit\" --json"
       ]
+    },
+    {
+      "command_id": "web.serve",
+      "category": "ops",
+      "invocation": "crb web serve [--host 127.0.0.1] [--port 8765]",
+      "summary": "Serve the read-only localhost dashboard for topic, run, queue, and memory inspection.",
+      "reads": [
+        "backend.topic_snapshot",
+        "backend.run_ledger",
+        "backend.queue_state",
+        "backend.memory_digest"
+      ],
+      "state_mutation": "none",
+      "authority_boundary": "Serves backend read models over loopback HTTP only; web routes reject direct writes and cannot mutate graph, queue, run, or provenance ledgers.",
+      "output_modes": [
+        "human"
+      ],
+      "json_schema_id": "crb.web.topic.dashboard.v1",
+      "human_summary_shape": "web-serve-startup.v1",
+      "examples": [
+        "crb web serve"
+      ]
     }
   ],
   "terminology": [
