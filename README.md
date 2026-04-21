@@ -1,6 +1,6 @@
 # Continual Research Bot
 
-`codex_continual_research_bot`은 단순히 검색 결과를 모아 요약하는 wrapper가 아니라, 같은 주제를 반복 연구하면서 가설을 공격하고 갱신하는 continual research bot입니다. 사용자는 연구 주제와 실행 조건을 넣고, backend는 queue/scheduler, Codex 실행, output validation, graph/provenance, snapshot/belief revision을 묶어 evidence, hypothesis, conflict, revision pressure를 반복적으로 갱신합니다.
+`codex_continual_research_bot`은 단순히 검색 결과를 모아 요약하는 wrapper가 아니라, 같은 주제를 반복 연구하면서 가설을 공격하고 갱신하는 continual research bot입니다. 사용자는 연구 주제와 실행 조건을 넣고, backend는 queue/scheduler, Codex 실행, output validation, graph/provenance, revision proposal을 묶어 evidence, hypothesis, conflict, revision pressure를 반복적으로 검증합니다.
 
 ## 현재 구현 상태
 
@@ -130,7 +130,7 @@ Output Validator / Repair
    ↓
 Canonical Graph / Provenance
    ↓
-Snapshot / Belief Revision
+Revision Proposal / Snapshot Input
    ↓
 Next Run Selection
 ```
@@ -143,7 +143,7 @@ Next Run Selection
 | Codex Runtime | `codex exec --json`을 실행 substrate로 사용해 evidence, claim, argument, proposal 초안을 생성합니다. |
 | Output Validator / Repair | runtime output을 strict schema와 competition gate로 검증하고, malformed proposal은 저장 경계 전에 막습니다. |
 | Canonical Graph / Provenance | evidence, claim, hypothesis, conflict, decision을 canonical graph/provenance 형태로 정규화합니다. |
-| Snapshot / Belief Revision | strengthen, weaken, retire, supersede 같은 revision proposal을 반영해 다음 snapshot을 만듭니다. |
+| Revision Proposal / Snapshot Input | strengthen, weaken, retire, supersede 같은 revision proposal을 정리합니다. 현재 구현은 검증된 canonical graph write와 run report 저장까지 닫고, 새 snapshot materialization은 통합 계층 또는 후속 구현 경계입니다. |
 | Next Run Selection | unresolved conflict, stale hypothesis, 낮은 challenger rate, user input backlog를 기준으로 다음 공격 지점을 고릅니다. |
 
 ## 왜 반복할수록 나아지는가
@@ -152,7 +152,7 @@ Next Run Selection
 
 conflict는 단순 오류가 아닙니다. 서로 다른 evidence나 가설이 충돌하는 상태이며, 다음 run이 다뤄야 할 frontier입니다. 그래서 support-only 반복은 정체로 보고, current best hypothesis를 계속 공격할 challenger generation과 revision pressure를 요구합니다.
 
-run output도 곧바로 canonical memory가 아닙니다. Codex가 만든 결과는 proposal이며, validation/canonicalization을 통과한 뒤에만 graph와 snapshot에 반영됩니다. 약한 hypothesis는 새 evidence와 경쟁 과정에서 weaken, retire, supersede될 수 있습니다.
+run output도 곧바로 canonical memory가 아닙니다. Codex가 만든 결과는 proposal이며, validation/canonicalization을 통과한 뒤에만 canonical graph write와 run report에 반영됩니다. 다음 snapshot이나 belief state 갱신은 이 검증된 proposal과 graph write를 입력으로 삼는 후속 경계입니다. 약한 hypothesis는 새 evidence와 경쟁 과정에서 weaken, retire, supersede될 수 있습니다.
 
 결국 시간이 지날수록 나아지는 원리는 "많이 저장해서"가 아니라, 현재 최선의 설명을 반복해서 공격하고 challenger와 경쟁시키며 provenance가 있는 evidence로 belief state를 갱신하기 때문입니다.
 
