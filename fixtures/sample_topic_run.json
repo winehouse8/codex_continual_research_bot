@@ -1,0 +1,44 @@
+{
+  "schema_id": "crb.sample_topic_run.v1",
+  "topic": {
+    "title": "Codex auth boundary",
+    "objective": "Track session ownership risk",
+    "topic_id": "topic_codex_auth_boundary"
+  },
+  "run": {
+    "input": "counterargument: warning-only stale sessions may be safe",
+    "expected_run_id": "run_79e577bebcc2",
+    "expected_queue_item_id": "queue_79e577bebcc2"
+  },
+  "commands": [
+    "crb init --json",
+    "crb doctor --json",
+    "crb topic create \"Codex auth boundary\" --objective \"Track session ownership risk\" --json",
+    "crb topic list --json",
+    "crb topic show topic_codex_auth_boundary",
+    "crb run start topic_codex_auth_boundary --input \"counterargument: warning-only stale sessions may be safe\" --json",
+    "crb run status \"run_79e577bebcc2\" --json",
+    "crb queue list --topic topic_codex_auth_boundary --json",
+    "crb memory snapshot topic_codex_auth_boundary --json",
+    "crb memory conflicts topic_codex_auth_boundary --json",
+    "crb memory hypotheses topic_codex_auth_boundary --json",
+    "crb graph export topic_codex_auth_boundary --format json --output graph.json",
+    "crb graph export topic_codex_auth_boundary --format dot --output graph.dot",
+    "crb graph export topic_codex_auth_boundary --format mermaid --output graph.mmd",
+    "crb graph view topic_codex_auth_boundary --format html --output graph.html",
+    "crb ops health --json",
+    "crb ops audit \"run_79e577bebcc2\" --json"
+  ],
+  "expected_artifacts": [
+    "graph.json",
+    "graph.dot",
+    "graph.mmd",
+    "graph.html"
+  ],
+  "operator_checks": [
+    "run status exposes the generated run id and queue state",
+    "queue list exposes retryability and human review flags",
+    "memory snapshot repeats that graph visualization is not a source of truth",
+    "JSON and HTML graph artifacts include the backend authority notice"
+  ]
+}

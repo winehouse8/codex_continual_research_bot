@@ -1,0 +1,34 @@
+$ crb topic create "Codex auth boundary" --objective "Track session ownership risk"
+Created topic topic_codex_auth_boundary.
+Topic: Codex auth boundary
+Topic id: topic_codex_auth_boundary
+Current best hypothesis initialized from the objective.
+
+$ crb topic show topic_codex_auth_boundary
+Loaded topic topic_codex_auth_boundary.
+Topic: topic_codex_auth_boundary
+Snapshot: v1
+Current best hypotheses:
+- Initial objective hypothesis: Track session ownership risk
+Challenger targets:
+- None selected yet.
+Active conflicts:
+- None recorded.
+Queue:
+- No queued work.
+
+$ crb run start topic_codex_auth_boundary --input "counterargument: warning-only stale sessions may be safe"
+Enqueued run run_79e577bebcc2.
+Run: run_79e577bebcc2
+Queue item: queue_79e577bebcc2
+Action: run.execute
+
+$ crb run status run_79e577bebcc2
+Run run_79e577bebcc2 is queued.
+Run: run_79e577bebcc2
+Status: queued
+Failure: none
+
+$ crb queue list --topic topic_codex_auth_boundary
+Found 1 queue item(s).
+- queue_79e577bebcc2 run.execute (queued): retryable=False human_review=False
