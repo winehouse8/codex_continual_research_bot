@@ -30,12 +30,26 @@ def build_graph_export_artifact(
     topic_id: str,
     snapshot: TopicSnapshot,
     graph_write: dict[str, Any] | None = None,
+    graph_writes: list[dict[str, Any]] | None = None,
     generated_at: datetime | None = None,
 ) -> GraphExportArtifact:
     """Build a deterministic visualization artifact from backend-owned state."""
 
     generated = generated_at or datetime.now(timezone.utc)
-    if graph_write is None:
+    if graph_write is not None and graph_writes is not None:
+        raise ValueError("provide either graph_write or graph_writes, not both")
+    if graph_writes is not None:
+        if not graph_writes:
+            projection = _snapshot_projection(topic_id=topic_id, snapshot=snapshot)
+            projection_source = "topic_snapshot"
+        else:
+            projection = _canonical_graph_history_projection(
+                topic_id=topic_id,
+                snapshot=snapshot,
+                graph_writes=graph_writes,
+            )
+            projection_source = "canonical_graph_history"
+    elif graph_write is None:
         projection = _snapshot_projection(topic_id=topic_id, snapshot=snapshot)
         projection_source = "topic_snapshot"
     else:
@@ -386,6 +400,43 @@ def _canonical_graph_projection(
     )
 
 
+def _canonical_graph_history_projection(
+    *,
+    topic_id: str,
+    snapshot: TopicSnapshot,
+    graph_writes: list[dict[str, Any]],
+) -> _Projection:
+    return _canonical_graph_projection(
+        topic_id=topic_id,
+        snapshot=snapshot,
+        canonical_graph=_merge_canonical_graph_writes(graph_writes),
+    )
+
+
+def _merge_canonical_graph_writes(graph_writes: list[dict[str, Any]]) -> dict[str, Any]:
+    nodes_by_id: dict[str, dict[str, Any]] = {}
+    edges_by_id: dict[str, dict[str, Any]] = {}
+    for graph_write in sorted(graph_writes, key=_graph_write_sort_key):
+        canonical_graph = _graph_json_payload(graph_write["graph_json"])
+        for node in sorted(canonical_graph.get("nodes", []), key=lambda item: str(item["id"])):
+            nodes_by_id[str(node["id"])] = node
+        for edge in sorted(canonical_graph.get("edges", []), key=lambda item: str(item["id"])):
+            edges_by_id[str(edge["id"])] = edge
+    return {
+        "nodes": [nodes_by_id[node_id] for node_id in sorted(nodes_by_id)],
+        "edges": [edges_by_id[edge_id] for edge_id in sorted(edges_by_id)],
+    }
+
+
+def _graph_write_sort_key(graph_write: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(graph_write.get("created_at", "")),
+        str(graph_write.get("run_id", "")),
+        str(graph_write.get("proposal_id", "")),
+        str(graph_write.get("graph_digest", "")),
+    )
+
+
 def _canonical_node_to_export(
     node: dict[str, Any],
     provenance_ids: list[str],
@@ -453,6 +504,8 @@ def _canonical_edge_to_export(
         "SUPPORTS": "supports",
         "CHALLENGES": "challenges",
         "SUPERSEDES": "supersedes",
+        "WEAKENS": "weakens",
+        "RETIRES": "retires",
         "DERIVED_FROM": "derived_from",
         "RECORDED_IN": "derived_from",
     }.get(edge_type)
@@ -576,6 +629,8 @@ def _edge_summary(*, edge_type: str, properties: dict[str, Any]) -> str:
         "SUPPORTS": "Canonical support relation projected from backend graph.",
         "CHALLENGES": "Canonical challenge relation projected from backend graph.",
         "SUPERSEDES": "Canonical supersession relation projected from backend graph.",
+        "WEAKENS": "Canonical weakening relation projected from backend graph.",
+        "RETIRES": "Canonical retirement relation projected from backend graph.",
         "DERIVED_FROM": "Claim or graph node is derived from provenance evidence.",
         "RECORDED_IN": "Canonical graph node was recorded in this provenance record.",
     }.get(edge_type, f"Canonical {edge_type} relation projected from backend graph.")

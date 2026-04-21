@@ -74,12 +74,70 @@ def make_snapshot() -> TopicSnapshot:
 
 
 def make_graph_write() -> dict[str, object]:
+    return make_graph_write_for(
+        run_id="run_001",
+        proposal_id="proposal_001",
+        created_at="2026-04-21T12:00:00+00:00",
+        artifact_id="src_001",
+        source_url="https://example.com/openai-codex-auth-doc",
+        claim_id="claim_001",
+        claim_text=(
+            "A scheduled run must not proceed when session inspection cannot verify "
+            "both principal identity and workspace policy."
+        ),
+        argument_id="arg_001",
+        challenger_id="hyp_002",
+    )
+
+
+def make_graph_write_for(
+    *,
+    run_id: str,
+    proposal_id: str,
+    created_at: str,
+    artifact_id: str,
+    source_url: str,
+    claim_id: str,
+    claim_text: str,
+    argument_id: str,
+    challenger_id: str,
+) -> dict[str, object]:
+    payload = load_proposal().model_dump(mode="json")
+    payload["evidence_candidates"][0].update(
+        {
+            "artifact_id": artifact_id,
+            "source_url": source_url,
+            "title": f"Evidence for {proposal_id}",
+        }
+    )
+    payload["claims"][0].update(
+        {
+            "claim_id": claim_id,
+            "text": claim_text,
+            "artifact_ids": [artifact_id],
+        }
+    )
+    payload["arguments"][0].update(
+        {
+            "argument_id": argument_id,
+            "claim_ids": [claim_id],
+            "rationale": f"{proposal_id} rationale",
+        }
+    )
+    payload["challenger_hypotheses"][0].update(
+        {
+            "hypothesis_id": challenger_id,
+            "title": f"Challenger from {proposal_id}",
+            "statement": f"{proposal_id} should remain visible in history projection.",
+        }
+    )
+    proposal = ProposalBundle.model_validate(payload)
     result = CanonicalGraphService().canonicalize(
-        proposal=load_proposal(),
+        proposal=proposal,
         context=CanonicalizationContext(
             topic_id="topic_001",
-            run_id="run_001",
-            proposal_id="proposal_001",
+            run_id=run_id,
+            proposal_id=proposal_id,
             current_best_hypothesis_id="hyp_001",
             existing_hypotheses=[
                 HypothesisSnapshot(
@@ -96,6 +154,9 @@ def make_graph_write() -> dict[str, object]:
     )
     assert not result.quarantined
     return {
+        "run_id": run_id,
+        "proposal_id": proposal_id,
+        "created_at": created_at,
         "graph_json": result.graph.model_dump(mode="json"),
         "graph_digest": result.digest,
     }
@@ -137,6 +198,78 @@ def test_canonical_graph_export_accepts_persisted_graph_json_string() -> None:
     assert artifact.memory_explorer.provenance_node_ids == ["provenance:proposal_001"]
 
 
+def test_multiple_canonical_graph_writes_accumulate_history_provenance() -> None:
+    first = make_graph_write()
+    second = make_graph_write_for(
+        run_id="run_002",
+        proposal_id="proposal_002",
+        created_at="2026-04-21T13:00:00+00:00",
+        artifact_id="src_002",
+        source_url="https://example.com/codex-healthcheck-path",
+        claim_id="claim_002",
+        claim_text="A dedicated healthcheck path preserves scheduled run auditability.",
+        argument_id="arg_002",
+        challenger_id="hyp_003",
+    )
+
+    artifact = build_graph_export_artifact(
+        topic_id="topic_001",
+        snapshot=make_snapshot(),
+        graph_writes=[first, second],
+        generated_at=GENERATED_AT,
+    )
+
+    assert artifact.projection_source == "canonical_graph_history"
+    assert artifact.memory_explorer.provenance_node_ids == [
+        "provenance:proposal_001",
+        "provenance:proposal_002",
+    ]
+    assert len(artifact.memory_explorer.evidence_node_ids) == 2
+    run_scopes = {
+        node.temporal_scope
+        for node in artifact.nodes
+        if node.node_type.value == "provenance"
+    }
+    assert {"run_001", "run_002"} <= run_scopes
+
+
+def test_latest_and_history_graph_exports_are_distinct() -> None:
+    first = make_graph_write()
+    second = make_graph_write_for(
+        run_id="run_002",
+        proposal_id="proposal_002",
+        created_at="2026-04-21T13:00:00+00:00",
+        artifact_id="src_002",
+        source_url="https://example.com/codex-healthcheck-path",
+        claim_id="claim_002",
+        claim_text="A dedicated healthcheck path preserves scheduled run auditability.",
+        argument_id="arg_002",
+        challenger_id="hyp_003",
+    )
+
+    latest = build_graph_export_artifact(
+        topic_id="topic_001",
+        snapshot=make_snapshot(),
+        graph_write=second,
+        generated_at=GENERATED_AT,
+    )
+    history = build_graph_export_artifact(
+        topic_id="topic_001",
+        snapshot=make_snapshot(),
+        graph_writes=[first, second],
+        generated_at=GENERATED_AT,
+    )
+
+    assert latest.projection_source == "canonical_graph_write"
+    assert latest.memory_explorer.provenance_node_ids == ["provenance:proposal_002"]
+    assert history.projection_source == "canonical_graph_history"
+    assert history.memory_explorer.provenance_node_ids == [
+        "provenance:proposal_001",
+        "provenance:proposal_002",
+    ]
+    assert latest.graph_digest != history.graph_digest
+
+
 def test_graph_export_is_deterministic_for_same_inputs() -> None:
     graph_write = make_graph_write()
 
@@ -155,6 +288,83 @@ def test_graph_export_is_deterministic_for_same_inputs() -> None:
 
     assert first.graph_digest == second.graph_digest
     assert first.model_dump(mode="json") == second.model_dump(mode="json")
+
+
+def test_history_graph_export_is_deterministic_for_reordered_writes() -> None:
+    first_write = make_graph_write()
+    second_write = make_graph_write_for(
+        run_id="run_002",
+        proposal_id="proposal_002",
+        created_at="2026-04-21T13:00:00+00:00",
+        artifact_id="src_002",
+        source_url="https://example.com/codex-healthcheck-path",
+        claim_id="claim_002",
+        claim_text="A dedicated healthcheck path preserves scheduled run auditability.",
+        argument_id="arg_002",
+        challenger_id="hyp_003",
+    )
+
+    first = build_graph_export_artifact(
+        topic_id="topic_001",
+        snapshot=make_snapshot(),
+        graph_writes=[second_write, first_write],
+        generated_at=GENERATED_AT,
+    )
+    second = build_graph_export_artifact(
+        topic_id="topic_001",
+        snapshot=make_snapshot(),
+        graph_writes=[first_write, second_write],
+        generated_at=GENERATED_AT,
+    )
+
+    assert first.graph_digest == second.graph_digest
+    assert first.model_dump(mode="json") == second.model_dump(mode="json")
+
+
+def test_hypothesis_revision_relations_render_in_visualization() -> None:
+    graph_write = make_graph_write()
+    graph = graph_write["graph_json"]
+    assert isinstance(graph, dict)
+    graph["edges"].extend(
+        [
+            {
+                "id": "edge:revision:supersedes",
+                "type": "SUPERSEDES",
+                "layer": "epistemic",
+                "source": "hypothesis:hyp_002:v1",
+                "target": "hypothesis:hyp_001:v2",
+                "properties": {"rationale": "A challenger supersedes the older version."},
+            },
+            {
+                "id": "edge:revision:weakens",
+                "type": "WEAKENS",
+                "layer": "epistemic",
+                "source": "hypothesis:hyp_002:v1",
+                "target": "hypothesis:hyp_001:v2",
+                "properties": {"rationale": "Contrary evidence weakens the older version."},
+            },
+            {
+                "id": "edge:revision:retires",
+                "type": "RETIRES",
+                "layer": "epistemic",
+                "source": "hypothesis:hyp_002:v1",
+                "target": "hypothesis:hyp_001:v2",
+                "properties": {"rationale": "The older version is retired."},
+            },
+        ]
+    )
+
+    artifact = build_graph_export_artifact(
+        topic_id="topic_001",
+        snapshot=make_snapshot(),
+        graph_write=graph_write,
+        generated_at=GENERATED_AT,
+    )
+
+    edge_types = {edge.edge_type.value for edge in artifact.edges}
+    assert {"supersedes", "weakens", "retires"} <= edge_types
+    assert "weakens" in render_graph_artifact(artifact, output_format="dot")
+    assert "-->|retires|" in render_graph_artifact(artifact, output_format="mermaid")
 
 
 def test_snapshot_conflict_subgraph_export_links_conflict_to_beliefs() -> None:

@@ -445,6 +445,7 @@ class LocalBackendGateway:
         topic_id: str,
         output_format: str,
         output_path: str,
+        scope: str = "latest",
     ) -> dict[str, object]:
         if output_format not in {"json", "dot", "mermaid"}:
             raise CliBackendError(
@@ -453,7 +454,14 @@ class LocalBackendGateway:
                 retryable=False,
                 human_review_required=False,
             )
-        artifact = self._graph_artifact(topic_id)
+        if scope not in {"latest", "history"}:
+            raise CliBackendError(
+                failure_code="unsupported_graph_scope",
+                detail=f"graph export scope {scope} is not supported",
+                retryable=False,
+                human_review_required=False,
+            )
+        artifact = self._graph_artifact(topic_id, scope=scope)
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(render_graph_artifact(artifact, output_format=output_format))
@@ -462,9 +470,11 @@ class LocalBackendGateway:
             "topic_id": topic_id,
             "output_path": str(path),
             "format": output_format,
+            "scope": scope,
             "graph_digest": artifact.graph_digest,
             "human": [
                 f"Output: {path}",
+                f"Scope: {scope}",
                 artifact.authority_notice,
             ],
         }
@@ -475,6 +485,7 @@ class LocalBackendGateway:
         topic_id: str,
         output_format: str,
         output_path: str,
+        scope: str = "latest",
     ) -> dict[str, object]:
         if output_format != "html":
             raise CliBackendError(
@@ -483,7 +494,14 @@ class LocalBackendGateway:
                 retryable=False,
                 human_review_required=False,
             )
-        artifact = self._graph_artifact(topic_id)
+        if scope not in {"latest", "history"}:
+            raise CliBackendError(
+                failure_code="unsupported_graph_scope",
+                detail=f"graph view scope {scope} is not supported",
+                retryable=False,
+                human_review_required=False,
+            )
+        artifact = self._graph_artifact(topic_id, scope=scope)
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(render_graph_artifact(artifact, output_format=output_format))
@@ -492,9 +510,11 @@ class LocalBackendGateway:
             "topic_id": topic_id,
             "output_path": str(path),
             "format": output_format,
+            "scope": scope,
             "graph_digest": artifact.graph_digest,
             "human": [
                 f"Output: {path}",
+                f"Scope: {scope}",
                 artifact.authority_notice,
             ],
         }
@@ -748,8 +768,29 @@ class LocalBackendGateway:
             ).fetchone()
         return None if row is None else dict(row)
 
-    def _graph_artifact(self, topic_id: str) -> GraphExportArtifact:
+    def _graph_history(self, topic_id: str) -> list[dict[str, Any]]:
+        ledger = self._initialized_ledger()
+        with ledger.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM canonical_graph_writes
+                WHERE topic_id = ?
+                ORDER BY created_at ASC, run_id ASC
+                """,
+                (topic_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _graph_artifact(self, topic_id: str, *, scope: str) -> GraphExportArtifact:
         snapshot = self._snapshot(topic_id)
+        if scope == "history":
+            return build_graph_export_artifact(
+                topic_id=topic_id,
+                snapshot=snapshot,
+                graph_writes=self._graph_history(topic_id),
+                generated_at=_utcnow(),
+            )
         return build_graph_export_artifact(
             topic_id=topic_id,
             snapshot=snapshot,
