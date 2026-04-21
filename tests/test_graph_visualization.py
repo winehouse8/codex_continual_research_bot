@@ -122,6 +122,21 @@ def test_canonical_graph_export_projects_hypotheses_evidence_conflicts_and_prove
     assert artifact.memory_explorer.provenance_node_ids == ["provenance:proposal_001"]
 
 
+def test_canonical_graph_export_accepts_persisted_graph_json_string() -> None:
+    graph_write = make_graph_write()
+    graph_write["graph_json"] = json.dumps(graph_write["graph_json"], sort_keys=True)
+
+    artifact = build_graph_export_artifact(
+        topic_id="topic_001",
+        snapshot=make_snapshot(),
+        graph_write=graph_write,
+        generated_at=GENERATED_AT,
+    )
+
+    assert artifact.projection_source == "canonical_graph_write"
+    assert artifact.memory_explorer.provenance_node_ids == ["provenance:proposal_001"]
+
+
 def test_graph_export_is_deterministic_for_same_inputs() -> None:
     graph_write = make_graph_write()
 

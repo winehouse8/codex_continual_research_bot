@@ -42,7 +42,7 @@ def build_graph_export_artifact(
         projection = _canonical_graph_projection(
             topic_id=topic_id,
             snapshot=snapshot,
-            canonical_graph=graph_write["graph_json"],
+            canonical_graph=_graph_json_payload(graph_write["graph_json"]),
         )
         projection_source = "canonical_graph_write"
 
@@ -188,6 +188,16 @@ class _Projection:
         self.nodes = nodes
         self.edges = edges
         self.memory_explorer = memory_explorer
+
+
+def _graph_json_payload(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        parsed = json.loads(value)
+        if isinstance(parsed, dict):
+            return parsed
+    raise ValueError("canonical graph write graph_json must be an object payload")
 
 
 def _snapshot_projection(*, topic_id: str, snapshot: TopicSnapshot) -> _Projection:
