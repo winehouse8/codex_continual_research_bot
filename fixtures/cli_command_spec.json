@@ -299,8 +299,8 @@
     {
       "command_id": "graph.export",
       "category": "graph",
-      "invocation": "crb graph export <topic-id> --format json [--output <path>]",
-      "summary": "Export a visualization artifact derived from backend memory for inspection.",
+      "invocation": "crb graph export <topic-id> --format <json|dot|mermaid> [--output <path>]",
+      "summary": "Export a deterministic visualization artifact derived from backend memory for inspection.",
       "reads": [
         "backend.graph_projection",
         "backend.provenance_digest"
@@ -313,13 +313,15 @@
       "json_schema_id": "crb.graph_export.v1",
       "human_summary_shape": null,
       "examples": [
-        "crb graph export topic_codex_auth_boundary --format json --output graph.json"
+        "crb graph export topic_codex_auth_boundary --format json --output graph.json",
+        "crb graph export topic_codex_auth_boundary --format dot --output graph.dot",
+        "crb graph export topic_codex_auth_boundary --format mermaid --output graph.mmd"
       ]
     },
     {
       "command_id": "graph.view",
       "category": "graph",
-      "invocation": "crb graph view <topic-id> --format <html|mermaid|dot> [--output <path>]",
+      "invocation": "crb graph view <topic-id> --format html [--output <path>]",
       "summary": "Create a lightweight visualization artifact for inspecting the backend graph projection.",
       "reads": [
         "backend.graph_projection",

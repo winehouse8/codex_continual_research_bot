@@ -3,9 +3,30 @@
   "export_id": "graph_export_2026_04_19_001",
   "topic_id": "topic_codex_auth_boundary",
   "snapshot_version": 7,
+  "projection_source": "canonical_graph_write",
   "graph_digest": "sha256:graph-write-007",
   "generated_at": "2026-04-19T12:10:00Z",
   "authority_notice": "This graph export is a visualization artifact, not a source of truth; backend graph and provenance ledgers remain authoritative.",
+  "memory_explorer": {
+    "summary": "Conflict-focused memory explorer projection with current best, challenger, evidence, conflict, and provenance node groups.",
+    "current_best_node_ids": [
+      "hyp_001"
+    ],
+    "challenger_node_ids": [
+      "hyp_002"
+    ],
+    "conflict_node_ids": [
+      "conf_001"
+    ],
+    "evidence_node_ids": [
+      "ev_001",
+      "ev_002"
+    ],
+    "provenance_node_ids": [
+      "prov_001"
+    ],
+    "unresolved_conflict_count": 1
+  },
   "nodes": [
     {
       "node_id": "topic_codex_auth_boundary",

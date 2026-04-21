@@ -311,6 +311,8 @@ def test_graph_export_and_view_commands_write_visualization_artifacts(tmp_path: 
         backend,
     )
     graph_json = tmp_path / "graph.json"
+    graph_dot = tmp_path / "graph.dot"
+    graph_mermaid = tmp_path / "graph.mmd"
     graph_html = tmp_path / "graph.html"
 
     code, output, _ = run_cli(
@@ -329,6 +331,41 @@ def test_graph_export_and_view_commands_write_visualization_artifacts(tmp_path: 
     assert code == 0
     assert parsed_json(output).data["output_path"] == str(graph_json)
     assert "not a source of truth" in graph_json.read_text()
+    assert "memory_explorer" in graph_json.read_text()
+
+    code, output, _ = run_cli(
+        [
+            "graph",
+            "export",
+            "topic_codex_auth_boundary",
+            "--format",
+            "dot",
+            "--output",
+            str(graph_dot),
+            "--json",
+        ],
+        backend,
+    )
+    assert code == 0
+    assert parsed_json(output).data["format"] == "dot"
+    assert graph_dot.read_text().startswith("digraph crb_graph")
+
+    code, output, _ = run_cli(
+        [
+            "graph",
+            "export",
+            "topic_codex_auth_boundary",
+            "--format",
+            "mermaid",
+            "--output",
+            str(graph_mermaid),
+            "--json",
+        ],
+        backend,
+    )
+    assert code == 0
+    assert parsed_json(output).data["format"] == "mermaid"
+    assert graph_mermaid.read_text().startswith("graph LR")
 
     code, output, _ = run_cli(
         [

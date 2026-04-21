@@ -32,6 +32,10 @@ from .graph_canonicalization import (
     canonical_mapping_spec,
     neo4j_constraints,
 )
+from .graph_visualization import (
+    build_graph_export_artifact,
+    render_graph_artifact,
+)
 from .interactive import (
     DuplicateInteractiveTriggerError,
     InteractiveRunError,
@@ -195,6 +199,7 @@ __all__ = [
     "WorkerExecutionResult",
     "WorkspaceRootMismatchError",
     "build_default_tool_registry",
+    "build_graph_export_artifact",
     "canonical_mapping_spec",
     "competition_pressure_score",
     "credential_locator_for_principal",
@@ -202,6 +207,7 @@ __all__ = [
     "extract_crb_examples",
     "neo4j_constraints",
     "render_human_topic_summary",
+    "render_graph_artifact",
     "resolve_credential_locator",
     "validate_credential_binding",
 ]

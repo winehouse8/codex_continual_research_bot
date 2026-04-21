@@ -133,6 +133,8 @@ def test_graph_export_fixture_parses_and_round_trips() -> None:
 
     assert parsed.authority_notice
     assert {"hypothesis", "evidence", "conflict"} <= node_types
+    assert parsed.memory_explorer.conflict_node_ids == ["conf_001"]
+    assert parsed.memory_explorer.unresolved_conflict_count == 1
     assert "not a source of truth" in parsed.authority_notice.lower()
     assert canonical_json(parsed.model_dump(mode="json")) == (
         FIXTURES_DIR / "graph_export.json"

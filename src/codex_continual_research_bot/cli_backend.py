@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import html
 import json
 import os
 import re
@@ -25,16 +24,16 @@ from codex_continual_research_bot.operational import (
     OperationalControlError,
     OperationalControlService,
 )
+from codex_continual_research_bot.graph_visualization import (
+    build_graph_export_artifact,
+    render_graph_artifact,
+)
 from codex_continual_research_bot.persistence import (
     DuplicateIdempotencyKeyError,
     QueueMutationMismatchError,
     SQLitePersistenceLedger,
 )
-from codex_continual_research_bot.ux_contracts import (
-    GraphExportArtifact,
-    GraphExportEdge,
-    GraphExportNode,
-)
+from codex_continual_research_bot.ux_contracts import GraphExportArtifact
 
 
 def _utcnow() -> datetime:
@@ -447,7 +446,7 @@ class LocalBackendGateway:
         output_format: str,
         output_path: str,
     ) -> dict[str, object]:
-        if output_format != "json":
+        if output_format not in {"json", "dot", "mermaid"}:
             raise CliBackendError(
                 failure_code="unsupported_graph_format",
                 detail=f"graph export format {output_format} is not supported",
@@ -457,13 +456,12 @@ class LocalBackendGateway:
         artifact = self._graph_artifact(topic_id)
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(artifact.model_dump(mode="json"), indent=2, sort_keys=False) + "\n"
-        )
+        path.write_text(render_graph_artifact(artifact, output_format=output_format))
         return {
             "summary": f"Exported graph artifact for {topic_id}.",
             "topic_id": topic_id,
             "output_path": str(path),
+            "format": output_format,
             "graph_digest": artifact.graph_digest,
             "human": [
                 f"Output: {path}",
@@ -488,29 +486,12 @@ class LocalBackendGateway:
         artifact = self._graph_artifact(topic_id)
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        nodes = "\n".join(
-            f"<li><strong>{html.escape(node.label)}</strong>: {html.escape(node.summary)}</li>"
-            for node in artifact.nodes
-        )
-        path.write_text(
-            "\n".join(
-                [
-                    "<!doctype html>",
-                    "<meta charset=\"utf-8\">",
-                    f"<title>CRB graph {html.escape(topic_id)}</title>",
-                    f"<h1>{html.escape(topic_id)}</h1>",
-                    f"<p>{html.escape(artifact.authority_notice)}</p>",
-                    "<ul>",
-                    nodes,
-                    "</ul>",
-                    "",
-                ]
-            )
-        )
+        path.write_text(render_graph_artifact(artifact, output_format=output_format))
         return {
             "summary": f"Rendered graph view for {topic_id}.",
             "topic_id": topic_id,
             "output_path": str(path),
+            "format": output_format,
             "graph_digest": artifact.graph_digest,
             "human": [
                 f"Output: {path}",
@@ -769,79 +750,9 @@ class LocalBackendGateway:
 
     def _graph_artifact(self, topic_id: str) -> GraphExportArtifact:
         snapshot = self._snapshot(topic_id)
-        nodes: list[GraphExportNode] = [
-            GraphExportNode(
-                node_id=topic_id,
-                node_type="topic",
-                label=topic_id,
-                summary=snapshot.topic_summary,
-                temporal_scope="current snapshot",
-                provenance_ids=[snapshot.recent_provenance_digest],
-            )
-        ]
-        edges: list[GraphExportEdge] = []
-        for hypothesis in snapshot.current_best_hypotheses:
-            nodes.append(self._hypothesis_node(hypothesis, role="current best"))
-            edges.append(
-                GraphExportEdge(
-                    edge_id=f"edge_{topic_id}_{hypothesis.hypothesis_id}",
-                    edge_type="visualizes",
-                    source_node_id=topic_id,
-                    target_node_id=hypothesis.hypothesis_id,
-                    summary="Topic snapshot visualizes this current-best hypothesis.",
-                    provenance_ids=[snapshot.recent_provenance_digest],
-                )
-            )
-        for hypothesis in snapshot.challenger_targets:
-            nodes.append(self._hypothesis_node(hypothesis, role="challenger"))
-            edges.append(
-                GraphExportEdge(
-                    edge_id=f"edge_{hypothesis.hypothesis_id}_challenges",
-                    edge_type="challenges",
-                    source_node_id=hypothesis.hypothesis_id,
-                    target_node_id=snapshot.current_best_hypotheses[0].hypothesis_id,
-                    summary="Challenger target is retained for adversarial verification.",
-                    provenance_ids=[snapshot.recent_provenance_digest],
-                )
-            )
-        for conflict in snapshot.active_conflicts:
-            nodes.append(
-                GraphExportNode(
-                    node_id=conflict.conflict_id,
-                    node_type="conflict",
-                    label=conflict.conflict_id,
-                    summary=conflict.summary,
-                    temporal_scope="current snapshot",
-                    provenance_ids=[snapshot.recent_provenance_digest],
-                )
-            )
-        payload = {
-            "topic_id": topic_id,
-            "snapshot_version": snapshot.snapshot_version,
-            "nodes": [node.model_dump(mode="json") for node in nodes],
-            "edges": [edge.model_dump(mode="json") for edge in edges],
-        }
-        return GraphExportArtifact(
-            schema_id="crb.graph.export.v1",
-            export_id=f"graph_export_{topic_id}_v{snapshot.snapshot_version}",
+        return build_graph_export_artifact(
             topic_id=topic_id,
-            snapshot_version=snapshot.snapshot_version,
-            graph_digest=_digest(payload),
+            snapshot=snapshot,
+            graph_write=self._latest_graph(topic_id),
             generated_at=_utcnow(),
-            authority_notice=(
-                "Graph export is not a source of truth; backend graph and provenance "
-                "ledgers remain authoritative."
-            ),
-            nodes=nodes,
-            edges=edges,
-        )
-
-    def _hypothesis_node(self, hypothesis: HypothesisRef, *, role: str) -> GraphExportNode:
-        return GraphExportNode(
-            node_id=hypothesis.hypothesis_id,
-            node_type="hypothesis",
-            label=hypothesis.title,
-            summary=f"{role}: {hypothesis.summary}",
-            temporal_scope="current snapshot",
-            provenance_ids=[hypothesis.hypothesis_id],
         )

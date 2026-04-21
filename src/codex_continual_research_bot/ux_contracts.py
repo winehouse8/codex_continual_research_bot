@@ -230,14 +230,26 @@ class GraphExportEdge(StrictModel):
     provenance_ids: list[StrictStr]
 
 
+class MemoryExplorerSummary(StrictModel):
+    summary: StrictStr = Field(min_length=1)
+    current_best_node_ids: list[StrictStr]
+    challenger_node_ids: list[StrictStr]
+    conflict_node_ids: list[StrictStr]
+    evidence_node_ids: list[StrictStr]
+    provenance_node_ids: list[StrictStr]
+    unresolved_conflict_count: StrictInt = Field(ge=0)
+
+
 class GraphExportArtifact(StrictModel):
     schema_id: StrictStr = Field(min_length=1)
     export_id: StrictStr = Field(min_length=1)
     topic_id: StrictStr = Field(min_length=1)
     snapshot_version: StrictInt = Field(ge=1)
+    projection_source: StrictStr = Field(min_length=1)
     graph_digest: StrictStr = Field(min_length=1)
     generated_at: datetime
     authority_notice: StrictStr = Field(min_length=1)
+    memory_explorer: MemoryExplorerSummary
     nodes: list[GraphExportNode] = Field(min_length=1)
     edges: list[GraphExportEdge]
 
@@ -256,6 +268,22 @@ class GraphExportArtifact(StrictModel):
         ]
         if missing:
             raise ValueError(f"graph export edges reference missing nodes: {missing}")
+        missing_explorer_nodes = [
+            node_id
+            for node_id in (
+                self.memory_explorer.current_best_node_ids
+                + self.memory_explorer.challenger_node_ids
+                + self.memory_explorer.conflict_node_ids
+                + self.memory_explorer.evidence_node_ids
+                + self.memory_explorer.provenance_node_ids
+            )
+            if node_id not in node_ids
+        ]
+        if missing_explorer_nodes:
+            raise ValueError(
+                "memory explorer references missing nodes: "
+                f"{sorted(set(missing_explorer_nodes))}"
+            )
         return self
 
 
