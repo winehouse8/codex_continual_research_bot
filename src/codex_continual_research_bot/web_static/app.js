@@ -103,18 +103,20 @@ function renderOverview(topicPayload) {
 
 function renderRuns(payload) {
   const list = el("runsList");
+  const runs = payload.timeline_items || payload.runs || [];
   list.innerHTML = "";
-  if (!payload.runs.length) {
+  if (!runs.length) {
     empty(list, "No runs recorded for this topic.");
     el("runCount").textContent = "0";
     return;
   }
-  el("runCount").textContent = String(payload.runs.length);
-  for (const run of payload.runs) {
+  el("runCount").textContent = String(runs.length);
+  for (const run of runs) {
     list.appendChild(
       row([
         { label: "Run", value: run.run_id },
         { label: "Status", value: text(run.status) },
+        { label: "Source", value: text(run.timeline_source, "run_ledger") },
         { label: "Graph digest", value: text(run.graph_digest) },
       ])
     );

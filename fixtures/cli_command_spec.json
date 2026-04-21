@@ -59,7 +59,8 @@
       "json_schema_id": "crb.ux.read_models.v1",
       "human_summary_shape": "topic-status-summary.v1",
       "examples": [
-        "crb topic create \"Codex auth boundary\" --objective \"Track session ownership risk\" --json"
+        "crb topic create \"Codex auth boundary\" --objective \"Track session ownership risk\" --json",
+        "crb topic create \"ISO 26262 safety case drift\" --objective \"Track whether ASIL decomposition evidence still supports the current safety case after a supplier tool qualification change.\" --json"
       ]
     },
     {
@@ -123,7 +124,8 @@
       "json_schema_id": "crb.ux.read_models.v1",
       "human_summary_shape": "run-trigger-summary.v1",
       "examples": [
-        "crb run start topic_codex_auth_boundary --input \"counterargument: warning-only stale sessions may be safe\" --json"
+        "crb run start topic_codex_auth_boundary --input \"counterargument: warning-only stale sessions may be safe\" --json",
+        "crb run start topic_iso_26262_safety_case_drift --input \"counterargument: supplier tool confidence may be stale after the latest qualification delta\" --json"
       ]
     },
     {
@@ -145,7 +147,8 @@
       "json_schema_id": "crb.ux.read_models.v1",
       "human_summary_shape": "run-status-summary.v1",
       "examples": [
-        "crb run status \"$run_id\" --json"
+        "crb run status \"$run_id\" --json",
+        "crb run status run_5e3826f4ce35 --json"
       ]
     },
     {
@@ -186,7 +189,8 @@
       "json_schema_id": "crb.ux.read_models.v1",
       "human_summary_shape": "queue-list.v1",
       "examples": [
-        "crb queue list --topic topic_codex_auth_boundary --json"
+        "crb queue list --topic topic_codex_auth_boundary --json",
+        "crb queue list --topic topic_iso_26262_safety_case_drift --json"
       ]
     },
     {
@@ -249,7 +253,8 @@
       "json_schema_id": "crb.ux.read_models.v1",
       "human_summary_shape": "memory-summary.v1",
       "examples": [
-        "crb memory snapshot topic_codex_auth_boundary --json"
+        "crb memory snapshot topic_codex_auth_boundary --json",
+        "crb memory snapshot topic_iso_26262_safety_case_drift --json"
       ]
     },
     {
@@ -293,7 +298,8 @@
       "json_schema_id": "crb.ux.read_models.v1",
       "human_summary_shape": "memory-hypotheses.v1",
       "examples": [
-        "crb memory hypotheses topic_codex_auth_boundary --json"
+        "crb memory hypotheses topic_codex_auth_boundary --json",
+        "crb memory hypotheses topic_iso_26262_safety_case_drift --json"
       ]
     },
     {
@@ -314,6 +320,7 @@
       "human_summary_shape": null,
       "examples": [
         "crb graph export topic_codex_auth_boundary --scope latest --format json --output graph.json",
+        "crb graph export topic_iso_26262_safety_case_drift --scope latest --format json --output iso26262-graph.json --json",
         "crb graph export topic_codex_auth_boundary --scope history --format json --output graph-history.json",
         "crb graph export topic_codex_auth_boundary --format dot --output graph.dot",
         "crb graph export topic_codex_auth_boundary --format mermaid --output graph.mmd"
@@ -337,7 +344,8 @@
       "json_schema_id": "crb.graph_export.v1",
       "human_summary_shape": "graph-view-summary.v1",
       "examples": [
-        "crb graph view topic_codex_auth_boundary --scope latest --format html --output graph.html"
+        "crb graph view topic_codex_auth_boundary --scope latest --format html --output graph.html",
+        "crb graph view topic_iso_26262_safety_case_drift --scope latest --format html --output iso26262-graph.html --json"
       ]
     },
     {
