@@ -11,6 +11,9 @@ dependencies = [
   "pydantic>=2.8,<3",
 ]
 
+[project.scripts]
+crb = "codex_continual_research_bot.cli:main"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8.3,<9",
