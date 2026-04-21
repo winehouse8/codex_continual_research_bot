@@ -726,6 +726,16 @@ class LocalBackendGateway:
             ],
         }
 
+    def graph_artifact(self, *, topic_id: str, scope: str = "latest") -> GraphExportArtifact:
+        if scope not in {"latest", "history"}:
+            raise CliBackendError(
+                failure_code="unsupported_graph_scope",
+                detail=f"graph scope {scope} is not supported",
+                retryable=False,
+                human_review_required=False,
+            )
+        return self._graph_artifact(topic_id, scope=scope)
+
     def ops_health(self) -> dict[str, object]:
         ledger = self._initialized_ledger()
         queue = OperationalControlService(ledger).queue_dashboard()
