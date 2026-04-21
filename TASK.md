@@ -868,6 +868,187 @@ Exit gate:
 
 - clean checkout에서 README 안내를 따라 최소 sample research flow를 실행하고 결과/graph/failure 상태를 확인할 수 있어야 한다.
 
+
+## Phase 16. Local Web UI UX Contract And View Models
+
+목적:
+CLI만으로는 파악하기 어려운 연구 진행 상태를 localhost web dashboard에서 한눈에 볼 수 있도록 UX contract와 view model을 먼저 고정한다.
+
+Includes:
+
+- dashboard information architecture
+- overview / hypothesis board / graph explorer / run timeline view model
+- web API JSON schemas
+- sample topic fixture for visual UI
+- empty/error/loading state contract
+
+Artifacts:
+
+- web UI UX spec doc or fixture
+- web view model types
+- API response fixtures
+- sample graph UI fixture
+
+Depends on:
+
+- Phase 12
+- Phase 13
+- Phase 14
+- Phase 15
+
+Required tests:
+
+- overview view model fixture parse test
+- graph explorer JSON schema test
+- run timeline fixture test
+- empty/dead-letter/stale-claim state snapshot test
+- authority notice presence test
+
+Failure modes:
+
+- UI가 graph projection을 source of truth처럼 보이게 함
+- conflict/dead-letter/stale claim 상태가 정상처럼 보임
+- 사용자가 현재 우세 가설과 다음 연구 행동을 한눈에 알 수 없음
+
+Exit gate:
+
+- web implementation 전에 화면별 데이터 contract가 고정되어야 한다.
+
+## Phase 17. Localhost Web Server And Dashboard Implementation
+
+목적:
+`crb web serve` 또는 동등한 명령으로 localhost dashboard를 실행하고, topic overview와 run/queue/memory 상태를 브라우저에서 확인할 수 있게 한다.
+
+Includes:
+
+- local HTTP server
+- dashboard HTML shell
+- `/api/topics`, `/api/topics/{id}`, `/api/topics/{id}/runs`, `/api/topics/{id}/queue`
+- read-only default policy
+- CLI command integration
+
+Artifacts:
+
+- web server module
+- web API handlers
+- static HTML/CSS/JS shell
+- `crb web serve` command
+- README local web section
+
+Depends on:
+
+- Phase 16
+
+Required tests:
+
+- web server route smoke test
+- API JSON response schema test
+- localhost bind default test
+- `crb web serve --help` test
+- read-only no direct write test
+- HTML shell smoke test
+
+Failure modes:
+
+- web server가 remote interface에 무심코 bind됨
+- UI route가 DB write boundary를 우회함
+- API가 CLI/backend read model과 다른 상태를 보여줌
+
+Exit gate:
+
+- sample DB로 localhost dashboard를 열고 overview/run/queue 상태를 확인할 수 있어야 한다.
+
+## Phase 18. Interactive Graph Explorer And Visual Research UX
+
+목적:
+사용자가 연구가 잘 진행 중인지 graph와 timeline을 한눈에 이해할 수 있도록 interactive graph explorer를 구현한다.
+
+Includes:
+
+- Cytoscape.js 또는 동등한 graph-specific renderer integration
+- node/edge type styling
+- current best / challenger / evidence / conflict / provenance filters
+- selected node detail panel
+- run/provenance filtering
+- graph history/latest toggle
+- visual empty/error states
+
+Artifacts:
+
+- graph explorer frontend
+- embedded/vendored asset policy
+- sample HTML snapshot or screenshot artifact
+- README visual walkthrough
+
+Depends on:
+
+- Phase 16
+- Phase 17
+- Phase 14
+
+Required tests:
+
+- graph explorer data adapter test
+- node/edge style class assignment test
+- filter state unit test or DOM snapshot test
+- selected node detail rendering test
+- history/latest toggle test
+- sample topic visual smoke test
+
+Failure modes:
+
+- 큰 graph에서 UI가 사용 불가능하게 느려짐
+- node/edge 색상이나 필터가 belief relation을 오해하게 만듦
+- conflict와 uncertainty가 시각적으로 묻힘
+- CDN asset 의존 때문에 offline/local 환경에서 UI가 깨짐
+
+Exit gate:
+
+- sample topic에서 current best, challenger, evidence, provenance, conflict/challenge relation을 브라우저에서 탐색할 수 있어야 한다.
+
+## Phase 19. Web UX Final Audit And First Research Demo
+
+목적:
+처음 보는 사용자가 CLI와 localhost web UI를 함께 사용해 실제 연구 상태를 이해할 수 있는지 end-to-end로 검증한다.
+
+Includes:
+
+- first-user web walkthrough
+- ISO26262 sample research demo artifact
+- README update with web dashboard screenshots or textual walkthrough
+- visual QA checklist
+- UX terminology cleanup
+
+Artifacts:
+
+- README web UI section
+- sample graph dashboard artifact
+- walkthrough transcript
+- final UX audit notes
+
+Depends on:
+
+- Phase 17
+- Phase 18
+
+Required tests:
+
+- README web quickstart smoke test
+- sample topic dashboard generation test
+- graph artifact/link sanity test
+- UX copy grep test for authority notice and conflict visibility
+- final `pytest` run
+
+Failure modes:
+
+- web UI는 있지만 사용자가 무엇을 봐야 하는지 모름
+- CLI와 web UI가 서로 다른 상태를 보여줌
+- README가 실제 web command와 불일치함
+
+Exit gate:
+
+- clean checkout에서 README를 따라 CLI로 sample topic을 만들고 localhost web UI에서 graph/timeline/memory 상태를 확인할 수 있어야 한다.
+
 ## 6. Cross-Phase Dependency Summary
 
 권장 구현 순서:
@@ -888,6 +1069,10 @@ Exit gate:
 14. Phase 13: CLI implementation / operator workflow
 15. Phase 14: graph visualization / memory explorer
 16. Phase 15: first-user experience / documentation
+17. Phase 16: local web UI UX contract / view models
+18. Phase 17: localhost web server / dashboard
+19. Phase 18: interactive graph explorer / visual research UX
+20. Phase 19: web UX final audit / first research demo
 
 이 순서를 바꾸면 생기는 대표 리스크:
 
@@ -917,3 +1102,4 @@ Exit gate:
 - scheduler가 stagnation 감소보다 비용 증폭만 만들고 selection policy가 방어되지 않음
 - user-visible summary와 backend state update를 원자적으로 묶을 수 없는 구조적 결함이 발견됨
 - CLI/visualization이 backend authority를 우회하거나 source-of-truth처럼 오해될 수 있음
+- localhost web UI가 conflict/dead-letter/stale-claim 상태를 숨겨 운영자가 연구가 잘 되고 있다고 오해함
