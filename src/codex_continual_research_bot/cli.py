@@ -68,10 +68,28 @@ class CliBackend(Protocol):
     def ops_replay(self, *, run_id: str, reason: str) -> dict[str, object]: ...
 
 
+FIRST_RUN_HELP = """\
+First run path:
+  crb init --json
+  crb topic create "Codex auth boundary" --objective "Track session ownership risk" --json
+  crb run start topic_codex_auth_boundary --input "counterargument: warning-only stale sessions may be safe" --json
+  crb run status <run-id> --json
+  crb memory snapshot topic_codex_auth_boundary --json
+  crb graph export topic_codex_auth_boundary --format json --output graph.json
+
+Result locations:
+  Run state is visible with `crb run status`.
+  Queue failures are visible with `crb queue list` and `crb queue dead-letter`.
+  Graph walkthrough artifacts are files written by `crb graph export` and `crb graph view`.
+"""
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="crb",
         description="Continual Research Bot operator CLI.",
+        epilog=FIRST_RUN_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--json", action="store_true", help="Emit stable JSON output.")
     subparsers = parser.add_subparsers(dest="group", required=True)
