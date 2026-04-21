@@ -299,8 +299,8 @@
     {
       "command_id": "graph.export",
       "category": "graph",
-      "invocation": "crb graph export <topic-id> --format <json|dot|mermaid> [--output <path>]",
-      "summary": "Export a deterministic visualization artifact derived from backend memory for inspection.",
+      "invocation": "crb graph export <topic-id> [--scope <latest|history>] --format <json|dot|mermaid> [--output <path>]",
+      "summary": "Export a deterministic visualization artifact derived from backend memory for inspection, either from the latest graph write or the topic history projection.",
       "reads": [
         "backend.graph_projection",
         "backend.provenance_digest"
@@ -313,7 +313,8 @@
       "json_schema_id": "crb.graph_export.v1",
       "human_summary_shape": null,
       "examples": [
-        "crb graph export topic_codex_auth_boundary --format json --output graph.json",
+        "crb graph export topic_codex_auth_boundary --scope latest --format json --output graph.json",
+        "crb graph export topic_codex_auth_boundary --scope history --format json --output graph-history.json",
         "crb graph export topic_codex_auth_boundary --format dot --output graph.dot",
         "crb graph export topic_codex_auth_boundary --format mermaid --output graph.mmd"
       ]
@@ -321,8 +322,8 @@
     {
       "command_id": "graph.view",
       "category": "graph",
-      "invocation": "crb graph view <topic-id> --format html [--output <path>]",
-      "summary": "Create a lightweight visualization artifact for inspecting the backend graph projection.",
+      "invocation": "crb graph view <topic-id> [--scope <latest|history>] --format html [--output <path>]",
+      "summary": "Create a lightweight visualization artifact for inspecting the latest or history backend graph projection.",
       "reads": [
         "backend.graph_projection",
         "backend.provenance_digest"
@@ -336,7 +337,7 @@
       "json_schema_id": "crb.graph_export.v1",
       "human_summary_shape": "graph-view-summary.v1",
       "examples": [
-        "crb graph view topic_codex_auth_boundary --format html --output graph.html"
+        "crb graph view topic_codex_auth_boundary --scope latest --format html --output graph.html"
       ]
     },
     {
