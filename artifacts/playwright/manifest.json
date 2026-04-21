@@ -1,0 +1,11 @@
+{
+  "schema_id": "crb.playwright.screenshot_manifest.v1",
+  "screenshots": {
+    "graph": "artifacts/playwright/graph.png",
+    "memory": "artifacts/playwright/memory.png",
+    "overview": "artifacts/playwright/overview.png",
+    "queue": "artifacts/playwright/queue.png",
+    "runs": "artifacts/playwright/runs.png"
+  },
+  "topic_id": "topic_codex_auth_boundary"
+}

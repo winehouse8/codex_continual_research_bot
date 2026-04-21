@@ -30,18 +30,26 @@
           <h2 id="topicTitle">No topic loaded</h2>
           <p id="topicSummary" class="lede">Initialize a local CRB database to inspect state.</p>
         </div>
-        <div class="metric-strip" aria-label="Topic metrics">
+        <div class="metric-strip run-state-metrics" aria-label="Run-state metrics">
           <div>
-            <span id="runCount">0</span>
-            <p>Runs</p>
+            <span id="runningCount">0</span>
+            <p>Running</p>
           </div>
           <div>
-            <span id="queueCount">0</span>
-            <p>Queue</p>
+            <span id="queuedCount">0</span>
+            <p>Queued</p>
           </div>
           <div>
-            <span id="conflictCount">0</span>
-            <p>Conflicts</p>
+            <span id="completedCount">0</span>
+            <p>Completed</p>
+          </div>
+          <div>
+            <span id="deadLetterCount">0</span>
+            <p>Dead-letter</p>
+          </div>
+          <div>
+            <span id="staleCount">0</span>
+            <p>Stale</p>
           </div>
         </div>
       </section>
@@ -55,6 +63,24 @@
       </nav>
 
       <section id="overview" class="view active" aria-label="Overview">
+        <article id="runningNowCard" class="current-work status-idle" aria-label="Current execution state">
+          <div>
+            <p class="label">Execution</p>
+            <h3 id="runningNowTitle">No active work</h3>
+            <p id="runningNowObjective" class="lede">No queue item selected.</p>
+          </div>
+          <dl>
+            <dt>Run</dt>
+            <dd id="runningNowRun">None</dd>
+            <dt>Queue</dt>
+            <dd id="runningNowQueue">None</dd>
+            <dt>Latest event</dt>
+            <dd id="runningNowEvent">None</dd>
+            <dt>Graph relation</dt>
+            <dd id="runningNowGraph">None</dd>
+          </dl>
+        </article>
+
         <div class="section-heading">
           <h3>Current Best</h3>
           <span id="snapshotVersion" class="pill">v0</span>
@@ -62,6 +88,7 @@
         <div id="hypotheses" class="card-grid"></div>
         <div class="section-heading">
           <h3>Active Conflicts</h3>
+          <span id="conflictCount" class="pill">0</span>
         </div>
         <div id="conflicts" class="card-grid"></div>
       </section>
@@ -97,6 +124,7 @@
       <section id="runs" class="view" aria-label="Runs">
         <div class="section-heading">
           <h3>Run Timeline</h3>
+          <span id="runCount" class="pill">0</span>
         </div>
         <div id="runsList" class="table-list"></div>
       </section>
@@ -104,6 +132,7 @@
       <section id="queue" class="view" aria-label="Queue">
         <div class="section-heading">
           <h3>Queue State</h3>
+          <span id="queueCount" class="pill">0</span>
         </div>
         <div id="queueList" class="table-list"></div>
       </section>

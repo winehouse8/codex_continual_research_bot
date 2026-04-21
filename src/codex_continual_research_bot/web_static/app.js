@@ -35,6 +35,10 @@ function card(title, summary, className = "") {
   return node;
 }
 
+function statusClass(stateName) {
+  return `status-${String(stateName || "idle").replaceAll("_", "-")}`;
+}
+
 function row(columns) {
   const node = document.createElement("article");
   node.className = "row";
@@ -45,6 +49,12 @@ function row(columns) {
     part.querySelector("p").textContent = column.value;
     node.appendChild(part);
   }
+  return node;
+}
+
+function statusRow(columns, className = "") {
+  const node = row(columns);
+  node.className = `row status-row ${className}`.trim();
   return node;
 }
 
@@ -71,11 +81,33 @@ function renderTopics() {
 }
 
 function renderOverview(topicPayload) {
-  const topic = topicPayload.topic.topic || {};
-  const projected = topicPayload.topic.projected_memory || {};
+  const topicView = topicPayload.topic || {};
+  const topic = topicView.topic || {};
+  const projected = topicView.projected_memory || {};
+  const runState = topicPayload.run_state || {};
+  const counts = runState.status_counts || {};
+  const runningNow = runState.running_now || {};
   el("topicTitle").textContent = topic.title || topicPayload.topic_id;
   el("topicSummary").textContent = topic.topic_summary || "No topic summary projected.";
   el("snapshotVersion").textContent = `v${topic.snapshot_version || 0}`;
+  el("runningCount").textContent = String(counts.running || 0);
+  el("queuedCount").textContent = String(counts.queued || 0);
+  el("completedCount").textContent = String(counts.completed || 0);
+  el("deadLetterCount").textContent = String(counts.dead_letter || 0);
+  el("staleCount").textContent = String(counts.stale || 0);
+  el("runCount").textContent = String((runState.run_timeline_items || topicPayload.runs || []).length);
+  el("queueCount").textContent = String(counts.total || 0);
+
+  const current = el("runningNowCard");
+  current.className = `current-work ${statusClass(runningNow.state)}`;
+  el("runningNowTitle").textContent = runningNow.title || "Current execution state";
+  el("runningNowObjective").textContent = runningNow.objective || "No objective projected.";
+  el("runningNowRun").textContent = text(runningNow.run_id);
+  el("runningNowQueue").textContent = text(runningNow.queue_item_id);
+  el("runningNowEvent").textContent = `${text(runningNow.latest_event?.event_type)} · ${text(
+    runningNow.latest_event?.detail
+  )}`;
+  el("runningNowGraph").textContent = runningNow.graph_context?.summary || "No graph relation projected.";
 
   const hypotheses = el("hypotheses");
   hypotheses.innerHTML = "";
@@ -103,42 +135,76 @@ function renderOverview(topicPayload) {
 
 function renderRuns(payload) {
   const list = el("runsList");
-  const runs = payload.timeline_items || payload.runs || [];
+  const runs = payload.run_state?.run_timeline_items || payload.timeline_items || payload.runs || [];
   list.innerHTML = "";
   if (!runs.length) {
-    empty(list, "No runs recorded for this topic.");
+    empty(list, "No runs recorded. If queue count is non-zero, work is waiting but no worker has claimed it.");
     el("runCount").textContent = "0";
     return;
   }
   el("runCount").textContent = String(runs.length);
   for (const run of runs) {
     list.appendChild(
-      row([
+      statusRow([
         { label: "Run", value: run.run_id },
         { label: "Status", value: text(run.status) },
-        { label: "Source", value: text(run.timeline_source, "run_ledger") },
-        { label: "Graph digest", value: text(run.graph_digest) },
-      ])
+        { label: "Objective", value: text(run.objective) },
+        { label: "Latest event", value: text(run.latest_event?.event_type || run.timeline_source, "run_ledger") },
+        { label: "Graph relation", value: text(run.graph_context?.summary) },
+      ], statusClass(run.claim?.stale ? "stale" : run.status || run.queue_state))
     );
   }
 }
 
 function renderQueue(payload) {
   const list = el("queueList");
-  const items = payload.queue.items || [];
+  const runState = payload.run_state || {};
+  const groups = runState.queue_groups || [];
+  const items = payload.queue?.items || payload.queue.items || [];
   list.innerHTML = "";
-  el("queueCount").textContent = String(items.length);
+  el("queueCount").textContent = String(runState.status_counts?.total || items.length);
+  if (groups.length) {
+    for (const group of groups) {
+      const section = document.createElement("section");
+      section.className = `queue-group ${statusClass(group.group)}`;
+      section.innerHTML = "<h4></h4><div></div>";
+      section.querySelector("h4").textContent = `${group.label} · ${group.count}`;
+      const body = section.querySelector("div");
+      if (!group.items.length) {
+        const node = document.createElement("p");
+        node.className = "empty compact";
+        node.textContent = `No ${group.label.toLowerCase()} work.`;
+        body.appendChild(node);
+      } else {
+        for (const item of group.items) {
+          body.appendChild(
+            statusRow([
+              { label: "Queue item", value: item.queue_item_id },
+              { label: "Run", value: text(item.run_id) },
+              { label: "Objective", value: item.objective },
+              {
+                label: "Graph relation",
+                value: text(item.graph_context?.summary),
+              },
+            ], statusClass(item.state))
+          );
+        }
+      }
+      list.appendChild(section);
+    }
+    return;
+  }
   if (!items.length) {
-    empty(list, "No queued work for this topic.");
+    empty(list, "No queued, claimed, completed, or dead-letter work for this topic.");
     return;
   }
   for (const item of items) {
     list.appendChild(
-      row([
+      statusRow([
         { label: "Queue item", value: item.queue_item_id },
         { label: "State", value: item.state },
         { label: "Objective", value: text(item.objective) },
-      ])
+      ], statusClass(item.claim?.stale ? "stale" : item.state))
     );
   }
 }
@@ -146,6 +212,7 @@ function renderQueue(payload) {
 function renderMemory(payload) {
   const list = el("memoryList");
   const memory = payload.memory;
+  const projected = payload.topic?.projected_memory || {};
   list.innerHTML = "";
   el("graphDigest").textContent = text(memory.graph_digest, "none");
   const metrics = [
@@ -157,6 +224,36 @@ function renderMemory(payload) {
   for (const [title, value] of metrics) {
     list.appendChild(card(title, String(value)));
   }
+  const currentBest = projected.current_best_hypotheses || [];
+  const challengers = projected.challenger_targets || [];
+  const conflicts = projected.active_conflicts || [];
+  list.appendChild(
+    card(
+      "Current best",
+      currentBest.length
+        ? currentBest.map((item) => item.title).join("; ")
+        : "No current best hypothesis projected.",
+      "status-running"
+    )
+  );
+  list.appendChild(
+    card(
+      "Challengers",
+      challengers.length
+        ? challengers.map((item) => item.title).join("; ")
+        : "No challenger hypothesis projected.",
+      "status-queued"
+    )
+  );
+  list.appendChild(
+    card(
+      "Conflicts",
+      conflicts.length
+        ? conflicts.map((item) => item.summary).join("; ")
+        : "No active conflict projected.",
+      conflicts.length ? "status-dead-letter" : ""
+    )
+  );
 }
 
 function bindGraphFilterControls(graph) {
@@ -176,7 +273,7 @@ function bindGraphFilterControls(graph) {
       renderGraphExplorer();
     });
     const span = document.createElement("span");
-    span.textContent = `${filter.label} ${filter.total_count}`;
+    span.textContent = `${filter.label} · ${filter.visible_count}/${filter.total_count}`;
     label.append(input, span);
     target.appendChild(label);
   }
@@ -320,7 +417,12 @@ async function loadGraph(scope = state.graphScope) {
   state.graphScope = scope;
   const topicId = encodeURIComponent(state.selectedTopicId);
   const payload = await getJson(`/api/topics/${topicId}/graph/${scope}`);
-  state.graph = payload.graph;
+  applyGraph(payload.graph, scope);
+}
+
+function applyGraph(graph, scope = state.graphScope) {
+  state.graphScope = scope;
+  state.graph = graph;
   state.selectedNodeId = state.graph.selected_node?.node_id || null;
   bindGraphFilterControls(state.graph);
   renderProvenanceOptions(state.graph);
@@ -335,18 +437,13 @@ async function loadSelectedTopic() {
     return;
   }
   const topicId = encodeURIComponent(state.selectedTopicId);
-  const [topic, runs, queue, memory] = await Promise.all([
-    getJson(`/api/topics/${topicId}`),
-    getJson(`/api/topics/${topicId}/runs`),
-    getJson(`/api/topics/${topicId}/queue`),
-    getJson(`/api/topics/${topicId}/memory`),
-  ]);
-  el("authorityNotice").textContent = topic.authority_notice;
-  renderOverview(topic);
-  renderRuns(runs);
-  renderQueue(queue);
-  renderMemory(memory);
-  await loadGraph(state.graphScope);
+  const dashboard = await getJson(`/api/web/topics/${topicId}/dashboard`);
+  el("authorityNotice").textContent = dashboard.authority_notice;
+  renderOverview(dashboard);
+  renderRuns(dashboard);
+  renderQueue(dashboard);
+  renderMemory(dashboard);
+  applyGraph(dashboard.graph, "latest");
 }
 
 async function loadTopics() {
