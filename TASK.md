@@ -683,6 +683,191 @@ Exit gate:
 - human review 없이도 자동 복구가 아니라 `safe repair + explicit audit`가 되어야 한다.
 - replay determinism을 증명하지 못하면 운영 handoff 불가.
 
+
+## Phase 12. UX Contract, CLI Information Architecture, And Read Models
+
+목적:
+처음 보는 사용자가 연구를 시작하고 상태를 이해할 수 있도록 CLI/UX contract를 먼저 고정한다.
+
+Includes:
+
+- CLI command taxonomy
+- user-facing terminology
+- JSON output schema
+- human-readable summary shape
+- topic/run/queue/memory read models
+- graph visualization artifact contract
+
+Artifacts:
+
+- CLI command spec
+- UX view model types or docs
+- graph export schema fixture
+- README update with command examples
+
+Depends on:
+
+- Phase 11
+
+Required tests:
+
+- CLI command spec snapshot test
+- JSON output fixture parse test
+- human summary golden snapshot test
+- graph export fixture parse test
+- README command examples sanity check
+
+Failure modes:
+
+- CLI가 backend state authority를 우회하는 command를 약속함
+- user-facing summary가 uncertainty/conflict를 숨김
+- graph visualization이 source of truth처럼 오해됨
+
+Exit gate:
+
+- 구현 phase가 시작되기 전에 CLI/UX contract가 테스트 가능한 fixture로 고정되어야 한다.
+
+## Phase 13. CLI Implementation And Operator Workflow
+
+목적:
+사용자가 실제로 topic/run/queue/memory/ops 상태를 CLI로 다룰 수 있게 한다.
+
+Includes:
+
+- `crb` console entrypoint
+- `topic create/list/show`
+- `run start/status/resume`
+- `queue list/retry/dead-letter`
+- `memory snapshot/conflicts/hypotheses`
+- `ops health/audit/replay`
+- `--json` and human-readable output modes
+
+Artifacts:
+
+- CLI module
+- command handlers
+- output formatter
+- command help text
+- README quickstart update
+
+Depends on:
+
+- Phase 12
+- Phase 9
+- Phase 10
+- Phase 11
+
+Required tests:
+
+- CLI help test
+- command parser test
+- topic create/list/show test
+- run start/status/resume test
+- queue/dead-letter command test
+- `--json` schema test
+- human-readable output snapshot test
+- no direct persistence write bypass test
+
+Failure modes:
+
+- CLI command가 service/orchestrator boundary를 우회함
+- JSON output이 automation에 불안정함
+- user-facing status가 retryable/terminal/human-review failure를 구분하지 못함
+
+Exit gate:
+
+- README만 보고 기본 연구 흐름을 CLI로 실행/확인할 수 있어야 한다.
+
+## Phase 14. Graph Visualization And Memory Explorer
+
+목적:
+사용자가 current best, challenger, evidence, conflict, provenance를 graph artifact로 이해할 수 있게 한다.
+
+Includes:
+
+- topic subgraph export
+- hypothesis/evidence/conflict/provenance projection
+- DOT / Mermaid / JSON export
+- lightweight HTML artifact generation when feasible without heavy dependency
+- conflict-focused memory explorer summary
+
+Artifacts:
+
+- graph view module
+- export schema
+- sample visualization artifacts
+- README visualization section
+
+Depends on:
+
+- Phase 12
+- Phase 13
+- Phase 2
+- Phase 11
+
+Required tests:
+
+- graph export determinism test
+- conflict subgraph export test
+- provenance edge inclusion test
+- missing node/reference rejection test
+- DOT/Mermaid/JSON snapshot tests
+- HTML artifact smoke test when implemented
+
+Failure modes:
+
+- visualization이 canonical graph와 다른 relation을 보여줌
+- conflict/provenance를 누락해 사용자가 belief revision 이유를 이해하지 못함
+- export가 non-deterministic해 diff/replay가 불가능함
+
+Exit gate:
+
+- 최소 하나의 topic snapshot에서 graph artifact를 생성하고, current best / challenger / conflict / evidence provenance를 확인할 수 있어야 한다.
+
+## Phase 15. End-To-End First-User Experience And Documentation
+
+목적:
+처음 보는 사용자가 README와 CLI help만 보고 연구를 시작하고 결과를 이해하는 end-to-end path를 닫는다.
+
+Includes:
+
+- first-run tutorial flow
+- sample topic fixture
+- CLI quickstart validation
+- graph visualization walkthrough
+- troubleshooting guide
+- terminology glossary
+
+Artifacts:
+
+- README final update
+- sample topic/run fixture
+- tutorial transcript or golden output
+- troubleshooting section
+
+Depends on:
+
+- Phase 13
+- Phase 14
+
+Required tests:
+
+- README quickstart command smoke test
+- sample topic end-to-end test
+- tutorial output snapshot test
+- graph walkthrough artifact generation test
+- docs link check or grep-based sanity check
+
+Failure modes:
+
+- README가 실제 CLI와 불일치함
+- 처음 보는 사용자가 결과 위치나 failure 상태를 찾지 못함
+- agentic memory/conflict/belief revision 설명이 실제 구현과 다름
+
+Exit gate:
+
+- clean checkout에서 README 안내를 따라 최소 sample research flow를 실행하고 결과/graph/failure 상태를 확인할 수 있어야 한다.
+
 ## 6. Cross-Phase Dependency Summary
 
 권장 구현 순서:
@@ -699,6 +884,10 @@ Exit gate:
 10. Phase 9: interactive run path
 11. Phase 10: scheduled run path
 12. Phase 11: observability / repair / replay
+13. Phase 12: UX contract / CLI information architecture / read models
+14. Phase 13: CLI implementation / operator workflow
+15. Phase 14: graph visualization / memory explorer
+16. Phase 15: first-user experience / documentation
 
 이 순서를 바꾸면 생기는 대표 리스크:
 
@@ -727,3 +916,4 @@ Exit gate:
 - replay determinism이 transport 제약 때문에 구조적으로 보장되지 않음
 - scheduler가 stagnation 감소보다 비용 증폭만 만들고 selection policy가 방어되지 않음
 - user-visible summary와 backend state update를 원자적으로 묶을 수 없는 구조적 결함이 발견됨
+- CLI/visualization이 backend authority를 우회하거나 source-of-truth처럼 오해될 수 있음
