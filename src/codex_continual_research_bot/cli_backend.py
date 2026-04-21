@@ -191,22 +191,55 @@ class LocalBackendGateway:
         }
 
     def topic_show(self, *, topic_id: str) -> dict[str, object]:
-        snapshot = self._snapshot(topic_id)
+        snapshot, graph, artifact = self._memory_projection(topic_id)
         queue = self._queue_items(topic_id=topic_id)
+        hypotheses = self._hypothesis_views(artifact)
+        conflicts = self._conflict_views(artifact)
+        challenge_candidates = self._challenge_candidate_views(artifact)
+        projection_notice = self._projection_notice(
+            snapshot=snapshot,
+            graph=graph,
+            artifact=artifact,
+        )
         human = [
             f"Topic: {topic_id}",
             f"Snapshot: v{snapshot.snapshot_version}",
+            f"Memory source: {artifact.projection_source}",
+            projection_notice,
+            artifact.authority_notice,
             "Current best hypotheses:",
-            *[f"- {item.title}: {item.summary}" for item in snapshot.current_best_hypotheses],
+            *(
+                [
+                    f"- {item['title']}: {item['summary']}"
+                    for item in hypotheses
+                    if item["role"] == "current_best"
+                ]
+                or ["- None projected."]
+            ),
             "Challenger targets:",
             *(
-                [f"- {item.title}: {item.summary}" for item in snapshot.challenger_targets]
+                [
+                    f"- {item['title']}: {item['summary']}"
+                    for item in hypotheses
+                    if item["role"] == "challenger"
+                ]
                 or ["- None selected yet."]
             ),
             "Active conflicts:",
             *(
-                [f"- {item.conflict_id}: {item.summary}" for item in snapshot.active_conflicts]
+                [f"- {item['conflict_id']}: {item['summary']}" for item in conflicts]
                 or ["- None recorded."]
+            ),
+            "Challenge candidates:",
+            *(
+                [
+                    (
+                        f"- {item['source_label']} challenges {item['target_label']}: "
+                        f"{item['summary']}"
+                    )
+                    for item in challenge_candidates
+                ]
+                or ["- None projected."]
             ),
             "Queue:",
             *(
@@ -221,6 +254,23 @@ class LocalBackendGateway:
         return {
             "summary": f"Loaded topic {topic_id}.",
             "topic": snapshot.model_dump(mode="json"),
+            "memory_source": artifact.projection_source,
+            "graph_digest": artifact.graph_digest,
+            "authority_notice": artifact.authority_notice,
+            "snapshot_projection_mismatch": self._snapshot_projection_mismatch(
+                snapshot=snapshot,
+                artifact=artifact,
+            ),
+            "projected_memory": {
+                "current_best_hypotheses": [
+                    item for item in hypotheses if item["role"] == "current_best"
+                ],
+                "challenger_targets": [
+                    item for item in hypotheses if item["role"] == "challenger"
+                ],
+                "active_conflicts": conflicts,
+                "challenge_candidates": challenge_candidates,
+            },
             "queue": [self._queue_view(row) for row in queue],
             "human": human,
         }
@@ -388,18 +438,28 @@ class LocalBackendGateway:
         }
 
     def memory_snapshot(self, *, topic_id: str) -> dict[str, object]:
-        snapshot = self._snapshot(topic_id)
-        graph = self._latest_graph(topic_id)
+        snapshot, graph, artifact = self._memory_projection(topic_id)
+        node_type_counts: dict[str, int] = {}
+        for node in artifact.nodes:
+            node_type_counts[node.node_type.value] = node_type_counts.get(node.node_type.value, 0) + 1
         return {
             "summary": f"Loaded memory snapshot for {topic_id}.",
             "topic_id": topic_id,
-            "graph_digest": (
-                graph["graph_digest"] if graph is not None else snapshot.recent_provenance_digest
+            "memory_source": artifact.projection_source,
+            "graph_digest": artifact.graph_digest,
+            "latest_canonical_graph_digest": None if graph is None else graph["graph_digest"],
+            "hypothesis_count": len(artifact.memory_explorer.current_best_node_ids)
+            + len(artifact.memory_explorer.challenger_node_ids),
+            "evidence_count": len(artifact.memory_explorer.evidence_node_ids),
+            "conflict_count": len(artifact.memory_explorer.conflict_node_ids),
+            "challenge_candidate_count": len(self._challenge_candidate_views(artifact)),
+            "node_type_counts": node_type_counts,
+            "snapshot_projection_mismatch": self._snapshot_projection_mismatch(
+                snapshot=snapshot,
+                artifact=artifact,
             ),
-            "hypothesis_count": len(snapshot.current_best_hypotheses)
-            + len(snapshot.challenger_targets),
-            "conflict_count": len(snapshot.active_conflicts),
             "provenance_digest": snapshot.recent_provenance_digest,
+            "authority_notice": artifact.authority_notice,
             "visualization_notice": (
                 "Graph visualization is not a source of truth; backend graph and "
                 "provenance ledgers remain authoritative."
@@ -407,35 +467,75 @@ class LocalBackendGateway:
         }
 
     def memory_conflicts(self, *, topic_id: str) -> dict[str, object]:
-        snapshot = self._snapshot(topic_id)
-        conflicts = [conflict.model_dump(mode="json") for conflict in snapshot.active_conflicts]
+        snapshot, graph, artifact = self._memory_projection(topic_id)
+        conflicts = self._conflict_views(artifact)
+        challenge_candidates = self._challenge_candidate_views(artifact)
+        human = [
+            f"Memory source: {artifact.projection_source}",
+            self._projection_notice(snapshot=snapshot, graph=graph, artifact=artifact),
+            artifact.authority_notice,
+            "Active conflicts:",
+            *(
+                [f"- {conflict['conflict_id']}: {conflict['summary']}" for conflict in conflicts]
+                or ["- None recorded."]
+            ),
+            "Challenge candidates not promoted to active conflicts:",
+            *(
+                [
+                    (
+                        f"- {item['source_label']} challenges {item['target_label']} "
+                        f"({item['status']}): {item['summary']}"
+                    )
+                    for item in challenge_candidates
+                ]
+                or ["- None projected."]
+            ),
+        ]
         return {
-            "summary": f"Found {len(conflicts)} active conflict(s) for {topic_id}.",
+            "summary": (
+                f"Found {len(conflicts)} active conflict(s) and "
+                f"{len(challenge_candidates)} challenge candidate(s) for {topic_id}."
+            ),
             "topic_id": topic_id,
+            "memory_source": artifact.projection_source,
+            "graph_digest": artifact.graph_digest,
+            "authority_notice": artifact.authority_notice,
+            "snapshot_projection_mismatch": self._snapshot_projection_mismatch(
+                snapshot=snapshot,
+                artifact=artifact,
+            ),
             "conflicts": conflicts,
-            "human": [
-                f"- {conflict['conflict_id']}: {conflict['summary']}"
-                for conflict in conflicts
-            ]
-            or ["No active conflicts recorded."],
+            "challenge_candidates": challenge_candidates,
+            "human": human,
         }
 
     def memory_hypotheses(self, *, topic_id: str) -> dict[str, object]:
-        snapshot = self._snapshot(topic_id)
-        hypotheses = [
-            {"role": "current_best", **item.model_dump(mode="json")}
-            for item in snapshot.current_best_hypotheses
-        ] + [
-            {"role": "challenger", **item.model_dump(mode="json")}
-            for item in snapshot.challenger_targets
-        ]
+        snapshot, graph, artifact = self._memory_projection(topic_id)
+        hypotheses = self._hypothesis_views(artifact)
         return {
             "summary": f"Found {len(hypotheses)} hypothesis view(s) for {topic_id}.",
             "topic_id": topic_id,
+            "memory_source": artifact.projection_source,
+            "graph_digest": artifact.graph_digest,
+            "authority_notice": artifact.authority_notice,
+            "snapshot_projection_mismatch": self._snapshot_projection_mismatch(
+                snapshot=snapshot,
+                artifact=artifact,
+            ),
             "hypotheses": hypotheses,
             "human": [
-                f"- {item['role']}: {item['title']} ({item['hypothesis_id']})"
-                for item in hypotheses
+                f"Memory source: {artifact.projection_source}",
+                self._projection_notice(snapshot=snapshot, graph=graph, artifact=artifact),
+                artifact.authority_notice,
+                *[
+                    (
+                        f"- {item['role']}: {item['title']} ({item['hypothesis_id']}); "
+                        f"support={item['support_count']} "
+                        f"challenge={item['challenge_count']} "
+                        f"conflict={item['conflict_count']}"
+                    )
+                    for item in hypotheses
+                ],
             ],
         }
 
@@ -767,6 +867,203 @@ class LocalBackendGateway:
                 (topic_id,),
             ).fetchone()
         return None if row is None else dict(row)
+
+    def _memory_projection(
+        self,
+        topic_id: str,
+    ) -> tuple[TopicSnapshot, dict[str, Any] | None, GraphExportArtifact]:
+        snapshot = self._snapshot(topic_id)
+        graph = self._latest_graph(topic_id)
+        artifact = build_graph_export_artifact(
+            topic_id=topic_id,
+            snapshot=snapshot,
+            graph_write=graph,
+            generated_at=_utcnow(),
+        )
+        return snapshot, graph, artifact
+
+    def _hypothesis_views(
+        self,
+        artifact: GraphExportArtifact,
+    ) -> list[dict[str, object]]:
+        nodes = {node.node_id: node for node in artifact.nodes}
+        views: list[dict[str, object]] = []
+        for role, node_ids in (
+            ("current_best", artifact.memory_explorer.current_best_node_ids),
+            ("challenger", artifact.memory_explorer.challenger_node_ids),
+        ):
+            for node_id in node_ids:
+                node = nodes[node_id]
+                support_edges = self._relation_views(
+                    artifact,
+                    node_id=node_id,
+                    edge_types={"supports"},
+                    include_incoming=True,
+                    include_outgoing=False,
+                )
+                challenge_edges = self._relation_views(
+                    artifact,
+                    node_id=node_id,
+                    edge_types={"challenges"},
+                    include_incoming=True,
+                    include_outgoing=True,
+                )
+                conflict_edges = self._relation_views(
+                    artifact,
+                    node_id=node_id,
+                    edge_types={"conflicts_with"},
+                    include_incoming=True,
+                    include_outgoing=True,
+                )
+                views.append(
+                    {
+                        "role": role,
+                        "hypothesis_id": node.node_id,
+                        "title": node.label,
+                        "summary": self._display_summary(node.summary),
+                        "temporal_scope": node.temporal_scope,
+                        "provenance_ids": node.provenance_ids,
+                        "support_count": len(support_edges),
+                        "challenge_count": len(challenge_edges),
+                        "conflict_count": len(conflict_edges),
+                        "supporting_relations": support_edges,
+                        "challenging_relations": challenge_edges,
+                        "conflict_relations": conflict_edges,
+                    }
+                )
+        return views
+
+    def _conflict_views(
+        self,
+        artifact: GraphExportArtifact,
+    ) -> list[dict[str, object]]:
+        nodes = {node.node_id: node for node in artifact.nodes}
+        conflicts: list[dict[str, object]] = []
+        for conflict_id in artifact.memory_explorer.conflict_node_ids:
+            node = nodes[conflict_id]
+            conflict_relations = self._relation_views(
+                artifact,
+                node_id=conflict_id,
+                edge_types={"conflicts_with"},
+                include_incoming=True,
+                include_outgoing=True,
+            )
+            conflicts.append(
+                {
+                    "conflict_id": node.node_id,
+                    "summary": node.summary,
+                    "title": node.label,
+                    "status": "active",
+                    "temporal_scope": node.temporal_scope,
+                    "provenance_ids": node.provenance_ids,
+                    "conflict_relations": conflict_relations,
+                }
+            )
+        return conflicts
+
+    def _challenge_candidate_views(
+        self,
+        artifact: GraphExportArtifact,
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                **view,
+                "status": "challenge_not_promoted_to_active_conflict",
+            }
+            for view in self._relation_views(
+                artifact,
+                node_id=None,
+                edge_types={"challenges"},
+                include_incoming=True,
+                include_outgoing=True,
+            )
+        ]
+
+    def _display_summary(self, summary: str) -> str:
+        for prefix in ("current best: ", "challenger: "):
+            if summary.startswith(prefix):
+                return summary.removeprefix(prefix)
+        return summary
+
+    def _relation_views(
+        self,
+        artifact: GraphExportArtifact,
+        *,
+        node_id: str | None,
+        edge_types: set[str],
+        include_incoming: bool,
+        include_outgoing: bool,
+    ) -> list[dict[str, object]]:
+        nodes = {node.node_id: node for node in artifact.nodes}
+        relations: list[dict[str, object]] = []
+        for edge in artifact.edges:
+            edge_type = edge.edge_type.value
+            if edge_type not in edge_types:
+                continue
+            if node_id is not None:
+                incoming = include_incoming and edge.target_node_id == node_id
+                outgoing = include_outgoing and edge.source_node_id == node_id
+                if not incoming and not outgoing:
+                    continue
+            source = nodes[edge.source_node_id]
+            target = nodes[edge.target_node_id]
+            relations.append(
+                {
+                    "edge_id": edge.edge_id,
+                    "relation": edge_type,
+                    "source_node_id": edge.source_node_id,
+                    "source_label": source.label,
+                    "source_type": source.node_type.value,
+                    "target_node_id": edge.target_node_id,
+                    "target_label": target.label,
+                    "target_type": target.node_type.value,
+                    "summary": edge.summary,
+                    "provenance_ids": edge.provenance_ids,
+                }
+            )
+        return sorted(
+            relations,
+            key=lambda item: (
+                str(item["relation"]),
+                str(item["source_node_id"]),
+                str(item["target_node_id"]),
+                str(item["edge_id"]),
+            ),
+        )
+
+    def _projection_notice(
+        self,
+        *,
+        snapshot: TopicSnapshot,
+        graph: dict[str, Any] | None,
+        artifact: GraphExportArtifact,
+    ) -> str:
+        if graph is None:
+            return "No canonical graph write found; using topic snapshot fallback."
+        if self._snapshot_projection_mismatch(snapshot=snapshot, artifact=artifact):
+            return (
+                "Latest canonical graph projection differs from the topic snapshot; "
+                "showing graph-backed memory view."
+            )
+        return "Latest canonical graph projection matches the topic snapshot."
+
+    def _snapshot_projection_mismatch(
+        self,
+        *,
+        snapshot: TopicSnapshot,
+        artifact: GraphExportArtifact,
+    ) -> bool:
+        snapshot_current = {item.hypothesis_id for item in snapshot.current_best_hypotheses}
+        snapshot_challengers = {item.hypothesis_id for item in snapshot.challenger_targets}
+        snapshot_conflicts = {item.conflict_id for item in snapshot.active_conflicts}
+        projection_current = set(artifact.memory_explorer.current_best_node_ids)
+        projection_challengers = set(artifact.memory_explorer.challenger_node_ids)
+        projection_conflicts = set(artifact.memory_explorer.conflict_node_ids)
+        return (
+            snapshot_current != projection_current
+            or snapshot_challengers != projection_challengers
+            or snapshot_conflicts != projection_conflicts
+        )
 
     def _graph_history(self, topic_id: str) -> list[dict[str, Any]]:
         ledger = self._initialized_ledger()
