@@ -2,6 +2,7 @@
   "schema_id": "crb.playwright.screenshot_manifest.v1",
   "screenshots": {
     "graph": "artifacts/playwright/graph.png",
+    "help": "artifacts/playwright/help.png",
     "memory": "artifacts/playwright/memory.png",
     "overview": "artifacts/playwright/overview.png",
     "queue": "artifacts/playwright/queue.png",

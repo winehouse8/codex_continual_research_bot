@@ -1121,6 +1121,8 @@ class LocalBackendGateway:
             "attempts": row["attempts"],
             "max_attempts": row["max_attempts"],
             "available_at": row["available_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
             "objective": payload.get("objective", ""),
             "claim": claim_view,
             "failure": {} if failure is None else failure,

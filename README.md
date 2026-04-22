@@ -204,16 +204,16 @@ web graph explorer는 packaged local SVG renderer를 사용합니다. 별도 CDN
 crb web serve
 ```
 
-Web UI는 topic 생성, run 시작, queue retry 같은 write 작업을 제공하지 않습니다. 그런 작업은 CLI로 실행합니다. Dashboard와 API는 backend read model을 보여주는 projection이며, source of truth는 backend state, canonical graph, queue, provenance ledger입니다.
+Web UI는 topic 생성, run 시작, queue retry 같은 write 작업을 제공하지 않습니다. 그런 작업은 CLI로 실행합니다. Dashboard와 API는 backend read model을 보여주는 projection이며, source of truth는 backend state, canonical graph, queue, provenance ledger입니다. 첫 화면의 `대시보드 읽는 법` panel과 각 tab 상단 도움말은 처음 보는 사용자가 graph 약어, run timing, queue/dead-letter 의미를 dashboard 안에서 바로 확인하도록 제공됩니다.
 
 | 화면 | 사용자가 보는 것 | 판단 기준 |
 | --- | --- | --- |
-| Overview | topic 상태, snapshot version, running/queued/completed/dead-letter/stale count, `Running now` 실행 카드, current best, active conflict | 총 queue 수와 현재 실행 중 worker 수를 혼동하지 않는지, stale/dead-letter가 숨겨지지 않는지 봅니다. |
+| Overview | topic 상태, snapshot version, running/queued/completed/dead-letter/stale count, `지금 실행 중` 실행 카드, current best, active conflict, 개요 도움말 | 총 queue 수와 현재 실행 중 worker 수를 혼동하지 않는지, stale/dead-letter가 숨겨지지 않는지 봅니다. |
 | Hypothesis Board | 현재 구현에서는 Overview의 `Current Best`와 Memory projection으로 확인합니다. current best, challenger, support/challenge count를 같이 봅니다. | challenger가 없거나 support-only 반복이면 stagnation 가능성이 있습니다. |
-| Graph Explorer | evidence, claim, hypothesis, conflict, provenance node와 edge projection | `Latest`는 최신 graph write, `History`는 누적 projection입니다. graph는 inspection surface이지 authority가 아닙니다. |
-| Run Timeline | run ledger, queue request, latest event, graph relation summary, queued next action | completed run이어도 graph write가 없거나 failure code가 남으면 audit이 필요합니다. |
-| Queue | queued, running/claimed, completed, stale, retryable, dead-letter work를 별도 그룹으로 표시 | dead-letter 반복, stale claim 장기 유지, retry 불가 failure는 blocker 후보입니다. |
-| Memory | current best, challenger, conflict 상태와 hypothesis/evidence/conflict/challenge candidate count, graph digest | count가 변하지 않거나 active conflict가 계속 누적되면 후속 run input을 조정합니다. |
+| Graph Explorer | `TOP`, `HYP`, `CLA`, `EVI`, `PRO`, `CON` badge glossary, supports/challenges/visualizes edge 설명, evidence/claim/hypothesis/conflict/provenance projection | `Latest`는 최신 graph write, `History`는 누적 projection입니다. graph는 inspection surface이지 authority가 아닙니다. |
+| Run Timeline | run ledger, queue request, requested/claimed/started/completed/failed/stopped timestamp, duration, latest event, graph relation summary | completed run이어도 graph write가 없거나 failure code가 남으면 audit이 필요합니다. missing timestamp는 “기록 없음” 또는 “아직 완료 전”으로 구분합니다. |
+| Queue | queued, running/claimed, completed, stale, retryable, dead-letter work를 별도 그룹으로 표시하고 failure code / retryable / human-review-required / 다음 행동을 표시 | dead-letter 반복, stale claim 장기 유지, retry 불가 failure는 blocker 후보입니다. |
+| Memory | current best, challenger, conflict 상태와 hypothesis/evidence/conflict/challenge candidate count, graph digest, memory 도움말 | count가 변하지 않거나 active conflict가 계속 누적되면 후속 run input을 조정합니다. |
 
 주요 read-only API:
 
@@ -229,11 +229,11 @@ Web UI는 topic 생성, run 시작, queue retry 같은 write 작업을 제공하
 | topic graph history | `GET /api/topics/{topic_id}/graph/history` |
 | topic dashboard bundle | `GET /api/web/topics/{topic_id}/dashboard` |
 
-`dashboard` bundle은 `worker_loop`, `run_state.status_counts`, `run_state.running_now`, `run_state.queue_groups`, `run_state.run_timeline_items`를 포함합니다. `worker_loop`는 active state, iteration count, consecutive no-yield streak, stop reason, last meaningful graph change를 보여줍니다. `running_now`는 `objective`, `run_id`, `queue_item_id`, `latest_event`, 관련 graph node 요약을 함께 보여주므로 현재 작업이 실제 실행 중인지, 대기 중인지, stale claim인지, dead-letter인지 바로 판독할 수 있습니다.
+`dashboard` bundle은 `worker_loop`, `run_state.status_counts`, `run_state.running_now`, `run_state.queue_groups`, `run_state.run_timeline_items`, `dashboard_help`, `glossary`, `graph_legend`, `queue_state_help`를 포함합니다. `worker_loop`는 active state, iteration count, consecutive no-yield streak, stop reason, last meaningful graph change를 보여줍니다. `running_now`는 `objective`, `run_id`, `queue_item_id`, `latest_event`, 관련 graph node 요약을 함께 보여주므로 현재 작업이 실제 실행 중인지, 대기 중인지, stale claim인지, dead-letter인지 바로 판독할 수 있습니다. 각 `run_timeline_items[*].timing`은 requested/claimed/started/completed/failed/stopped/latest_event timestamp와 `duration_label`을 제공합니다.
 
 모든 non-GET 요청은 `read_only_web_surface`로 거부됩니다. Graph tab은 current best / challenger / evidence / conflict / provenance filter, selected node detail panel, provenance selector, visual empty/error state를 제공합니다.
 
-Playwright 기반 UX 검증은 Chromium browser가 설치된 환경에서 아래처럼 실행합니다. 테스트는 `artifacts/playwright/overview.png`, `graph.png`, `runs.png`, `queue.png`, `memory.png`, `manifest.json`을 생성합니다.
+Playwright 기반 UX 검증은 Chromium browser가 설치된 환경에서 아래처럼 실행합니다. 테스트는 `artifacts/playwright/overview.png`, `graph.png`, `runs.png`, `queue.png`, `memory.png`, `help.png`, `worker-loop-running.png`, `worker-loop-converged.png`, `manifest.json`을 생성합니다.
 
 ```bash
 python -m playwright install chromium
