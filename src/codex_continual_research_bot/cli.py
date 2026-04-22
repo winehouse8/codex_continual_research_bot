@@ -53,6 +53,7 @@ class CliBackend(Protocol):
         *,
         topic_id: str,
         loop: bool,
+        executor: str,
         max_iterations: int,
         max_consecutive_no_yield: int,
         max_malformed_proposals: int,
@@ -176,6 +177,12 @@ def build_parser() -> argparse.ArgumentParser:
     worker_run = _add_leaf(worker_sub, "run", "Run queued topic research tasks.", "worker.run")
     worker_run.add_argument("--topic", dest="topic_id", required=True)
     worker_run.add_argument("--loop", action="store_true", help="Continue until convergence or stop policy.")
+    worker_run.add_argument(
+        "--executor",
+        choices=("codex", "fixture"),
+        default="codex",
+        help="Execution backend. Default uses codex exec; fixture is deterministic test-only mode.",
+    )
     worker_run.add_argument("--max-iterations", type=int, default=10)
     worker_run.add_argument("--max-consecutive-no-yield", type=int, default=2)
     worker_run.add_argument("--max-malformed-proposals", type=int, default=2)
@@ -326,6 +333,7 @@ def dispatch(args: argparse.Namespace, backend: CliBackend) -> dict[str, object]
         return backend.worker_run(
             topic_id=args.topic_id,
             loop=args.loop,
+            executor=args.executor,
             max_iterations=args.max_iterations,
             max_consecutive_no_yield=args.max_consecutive_no_yield,
             max_malformed_proposals=args.max_malformed_proposals,

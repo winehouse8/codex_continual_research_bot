@@ -15,6 +15,7 @@ from codex_continual_research_bot.cli_contracts import CliBackendError
 from codex_continual_research_bot.contracts import (
     FailureCode,
     HypothesisRef,
+    ProposalBundle,
     QueueJob,
     QueueJobKind,
     QueueJobState,
@@ -33,9 +34,12 @@ from codex_continual_research_bot.operational import (
 )
 from codex_continual_research_bot.output_validation import append_proposal_safety_clause
 from codex_continual_research_bot.worker_loop import (
+    CodexBackedRunExecutor,
+    LocalProposalRunExecutor,
     WorkerLoopPolicy,
     WorkerLoopService,
 )
+from codex_continual_research_bot.runtime import CodexRuntimeConfig
 from codex_continual_research_bot.graph_visualization import (
     build_graph_export_artifact,
     render_graph_artifact,
@@ -553,6 +557,7 @@ class LocalBackendGateway:
         *,
         topic_id: str,
         loop: bool,
+        executor: str,
         max_iterations: int,
         max_consecutive_no_yield: int,
         max_malformed_proposals: int,
@@ -567,9 +572,11 @@ class LocalBackendGateway:
                 human_review_required=False,
             )
         iterations = max_iterations if loop else 1
+        loop_executor = self._worker_loop_executor(executor)
         service = WorkerLoopService(
             ledger,
             worker_id="cli-worker-loop",
+            executor=loop_executor,
             artifacts_root=self.db_path.parent / "worker-artifacts",
         )
         result = service.run(
@@ -595,12 +602,16 @@ class LocalBackendGateway:
             "malformed_proposal_streak": result.malformed_proposal_streak,
             "yielded_count": result.yielded_count,
             "last_graph_digest": result.last_graph_digest,
+            "executor_kind": result.executor_kind,
+            "last_error": result.last_error,
             "status": status,
             "human": [
                 f"Topic: {topic_id}",
                 f"Loop: {result.loop_id or 'none'}",
+                f"Executor: {result.executor_kind}",
                 f"State: {result.state}",
                 f"Stop reason: {result.stop_reason.value}",
+                f"Last error: {result.last_error or 'none'}",
                 f"Iterations: {result.iteration_count}",
                 f"Consecutive no-yield: {result.consecutive_no_yield}",
                 f"Yielded iterations: {result.yielded_count}",
@@ -628,6 +639,47 @@ class LocalBackendGateway:
                 f"Stop reason: {stopped.get('stop_reason')}",
             ],
         }
+
+    def _worker_loop_executor(self, executor: str):
+        artifact_root = self.db_path.parent / "worker-artifacts"
+        if executor == "fixture":
+            return LocalProposalRunExecutor(
+                self._initialized_ledger(),
+                artifacts_root=artifact_root,
+            )
+        if executor != "codex":
+            raise CliBackendError(
+                failure_code="invalid_worker_executor",
+                detail=f"worker executor {executor} is not supported",
+                retryable=False,
+                human_review_required=False,
+            )
+        schema_path = self._ensure_runtime_output_schema()
+        return CodexBackedRunExecutor(
+            self._initialized_ledger(),
+            runtime_config=CodexRuntimeConfig(
+                workspace_root=self.workspace_root,
+                artifact_root=artifact_root,
+                output_schema_path=schema_path,
+            ),
+        )
+
+    def _ensure_runtime_output_schema(self) -> Path:
+        schema_dir = self.db_path.parent / "schemas"
+        schema_dir.mkdir(parents=True, exist_ok=True)
+        schema_path = schema_dir / "research_run_v1.json"
+        if not schema_path.exists():
+            schema_path.write_text(
+                json.dumps(
+                    ProposalBundle.model_json_schema(),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        return schema_path
 
     def memory_snapshot(self, *, topic_id: str) -> dict[str, object]:
         snapshot, graph, artifact = self._memory_projection(topic_id)

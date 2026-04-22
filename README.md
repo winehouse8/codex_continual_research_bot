@@ -32,6 +32,8 @@ crb web serve
 
 `run start`의 JSON 응답에는 `run_id`와 `queue_item_id`가 들어 있습니다. 이후 `run status`, `queue dead-letter`, `ops audit`에는 그 값을 사용합니다. 현재 `crb web serve`는 `--topic` 옵션을 받지 않습니다. dashboard를 띄운 뒤 브라우저의 topic selector에서 topic을 고릅니다. 포트만 바꾸고 싶으면 `crb web serve --port 8787`처럼 실행할 수 있습니다.
 
+`crb worker run`의 기본 executor는 `codex`이며 `codex exec --json` invocation artifact를 `.crb/worker-artifacts` 아래에 남깁니다. deterministic local proposal 경로는 테스트와 fixture 검증 전용이며, 필요할 때만 `crb worker run --executor fixture ...`로 명시합니다.
+
 튜토리얼 fixture는 `fixtures/sample_topic_run.json`이고, golden transcript는 `fixtures/tutorial_transcript.txt`입니다.
 
 ## 사용자가 보는 흐름
@@ -77,6 +79,7 @@ Web UI Projection / CLI Summary
 | run 상태 보기 | `crb run status "$run_id" --json` |
 | run 재개 요청 | `crb run resume "$run_id"` |
 | worker loop 실행 | `crb worker run --topic topic_codex_auth_boundary --loop --max-iterations 3 --json` |
+| worker loop fixture 실행 | `crb worker run --topic topic_codex_auth_boundary --loop --executor fixture --max-iterations 3 --json` |
 | worker loop 상태 | `crb worker status --topic topic_codex_auth_boundary --json` |
 | worker loop 중지 | `crb worker stop --topic topic_codex_auth_boundary --json` |
 | queue 보기 | `crb queue list --topic topic_codex_auth_boundary --json` |

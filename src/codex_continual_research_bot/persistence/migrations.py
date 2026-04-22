@@ -35,6 +35,10 @@ MIGRATIONS = [
         version="0006_phase21_worker_loop_state",
         filename="migrations/0006_phase21_worker_loop_state.sql",
     ),
+    Migration(
+        version="0007_worker_loop_executor_visibility",
+        filename="migrations/0007_worker_loop_executor_visibility.sql",
+    ),
 ]
 
 

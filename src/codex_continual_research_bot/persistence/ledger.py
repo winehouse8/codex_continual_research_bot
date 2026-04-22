@@ -1530,6 +1530,7 @@ class SQLitePersistenceLedger:
         topic_id: str,
         worker_id: str,
         lease_expires_at: datetime,
+        executor_kind: str = "fixture",
         now: datetime | None = None,
     ) -> dict[str, Any] | None:
         current_time = _normalize_timestamp(now)
@@ -1592,9 +1593,11 @@ class SQLitePersistenceLedger:
                         last_run_id,
                         last_graph_digest,
                         last_meaningful_change,
+                        executor_kind,
+                        last_error,
                         yield_history_json,
                         updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, 0, 0, NULL, NULL, NULL, NULL, '[]', ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, 0, 0, NULL, NULL, NULL, NULL, ?, NULL, '[]', ?)
                     """,
                     (
                         loop_id,
@@ -1604,6 +1607,7 @@ class SQLitePersistenceLedger:
                         current_time,
                         current_time,
                         expires_at,
+                        executor_kind,
                         current_time,
                     ),
                 )
@@ -1661,6 +1665,7 @@ class SQLitePersistenceLedger:
         run_id: str | None,
         queue_state: str | None,
         failure_code: str | None,
+        failure_detail: str | None,
         consecutive_no_yield: int,
         malformed_proposal_streak: int,
         last_meaningful_change: str | None,
@@ -1689,6 +1694,7 @@ class SQLitePersistenceLedger:
                         "queue_item_id": queue_item_id,
                         "run_id": run_id,
                         "graph_digest_after": graph_digest_after,
+                        "failure_detail": failure_detail,
                         "created_at": current_time,
                     }
                 )
@@ -1710,8 +1716,9 @@ class SQLitePersistenceLedger:
                         edge_count_after,
                         queue_state,
                         failure_code,
+                        failure_detail,
                         created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         loop_id,
@@ -1729,6 +1736,7 @@ class SQLitePersistenceLedger:
                         edge_count_after,
                         queue_state,
                         failure_code,
+                        failure_detail,
                         current_time,
                     ),
                 )
@@ -1742,6 +1750,7 @@ class SQLitePersistenceLedger:
                         last_run_id = ?,
                         last_graph_digest = ?,
                         last_meaningful_change = ?,
+                        last_error = ?,
                         yield_history_json = ?,
                         updated_at = ?
                     WHERE loop_id = ?
@@ -1754,6 +1763,7 @@ class SQLitePersistenceLedger:
                         run_id,
                         graph_digest_after,
                         last_meaningful_change,
+                        failure_detail,
                         json.dumps(history, sort_keys=True),
                         current_time,
                         loop_id,

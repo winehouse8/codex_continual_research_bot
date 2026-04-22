@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from hashlib import sha256
 from pathlib import Path
+import sqlite3
 from typing import Protocol
 
 from codex_continual_research_bot.contracts import (
@@ -47,8 +48,13 @@ from codex_continual_research_bot.orchestrator import (
     RunOrchestrator,
     RunStateMachine,
 )
-from codex_continual_research_bot.persistence import SQLitePersistenceLedger
+from codex_continual_research_bot.persistence import (
+    QueueMutationMismatchError,
+    SQLitePersistenceLedger,
+)
 from codex_continual_research_bot.runtime import (
+    CodexRuntimeConfig,
+    CodexRuntimeCoordinator,
     CodexRuntimeError,
     RuntimeExecutionResult,
     RuntimeMetrics,
@@ -72,6 +78,7 @@ class WorkerLoopStopReason(str, Enum):
     REPEATED_MALFORMED_PROPOSAL = "repeated_malformed_proposal"
     ACTIVE_LOOP_EXISTS = "active_loop_exists"
     STOPPED_BY_OPERATOR = "stopped_by_operator"
+    EXECUTOR_ERROR = "executor_error"
 
 
 @dataclass(frozen=True)
@@ -103,10 +110,13 @@ class LoopExecutionResult:
     run_id: str | None
     queue_state: QueueJobState
     failure_code: FailureCode | None = None
+    failure_detail: str | None = None
     report: RunReportViewModel | None = None
 
 
 class WorkerLoopRunExecutor(Protocol):
+    executor_kind: str
+
     def execute_item(
         self,
         *,
@@ -159,13 +169,9 @@ class YieldAnalyzer:
 
 
 class LocalProposalRunExecutor:
-    """Deterministic local executor used by the CLI fixture path.
+    """Deterministic fixture executor for tests and explicit mock runs."""
 
-    Production deployments can inject a Codex-backed executor. This default
-    keeps the local CLI and tests end-to-end without treating CLI/UI state as
-    graph authority; all writes still pass through orchestrator validation and
-    canonical graph persistence.
-    """
+    executor_kind = "fixture"
 
     def __init__(
         self,
@@ -190,12 +196,27 @@ class LocalProposalRunExecutor:
     ) -> LoopExecutionResult:
         intent: RunIntent | None = None
         try:
+            existing = self._existing_report_result(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                worker_id=worker_id,
+            )
+            if existing is not None:
+                return existing
             intent = self._orchestrator.start_queued_run(
                 queue_item_id=queue_item_id,
                 run_id=run_id,
                 worker_id=worker_id,
                 mode=RunMode.SCHEDULED,
             )
+            existing = self._existing_report_result(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                worker_id=worker_id,
+                idempotency_key=intent.execution_request.idempotency_key,
+            )
+            if existing is not None:
+                return existing
             runtime_result = RuntimeExecutionResult(
                 run_id=run_id,
                 proposal=self._proposal_for_intent(intent),
@@ -238,8 +259,16 @@ class LocalProposalRunExecutor:
                 run_id=run_id,
                 queue_state=QueueJobState.QUEUED if exc.retryable else QueueJobState.DEAD_LETTER,
                 failure_code=exc.failure_code,
+                failure_detail=exc.detail,
             )
         except (CompetitionValidationError, InvalidRunTransitionError) as exc:
+            existing = self._existing_report_result(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                worker_id=worker_id,
+            )
+            if existing is not None:
+                return existing
             self._fail_run_if_possible(run_id)
             if intent is not None:
                 self._ledger.record_interactive_run_failure(
@@ -258,6 +287,7 @@ class LocalProposalRunExecutor:
                 run_id=run_id,
                 queue_state=QueueJobState.DEAD_LETTER,
                 failure_code=FailureCode.MALFORMED_PROPOSAL,
+                failure_detail=str(exc),
             )
 
     def _proposal_for_intent(self, intent: RunIntent) -> ProposalBundle:
@@ -418,14 +448,25 @@ class LocalProposalRunExecutor:
             operator_failure_summary=None,
             created_at=_utcnow(),
         )
-        self._ledger.record_interactive_run_success(
-            report=report,
-            proposal_id=proposal_id,
-            graph_payload=canonical.graph.model_dump(mode="json"),
-            graph_digest=canonical.digest,
-            node_count=len(canonical.graph.nodes),
-            edge_count=len(canonical.graph.edges),
-        )
+        try:
+            self._ledger.record_interactive_run_success(
+                report=report,
+                proposal_id=proposal_id,
+                graph_payload=canonical.graph.model_dump(mode="json"),
+                graph_digest=canonical.digest,
+                node_count=len(canonical.graph.nodes),
+                edge_count=len(canonical.graph.edges),
+            )
+        except sqlite3.IntegrityError:
+            existing = self._existing_report_result(
+                queue_item_id=intent.queue_item_id or "",
+                run_id=intent.run_id,
+                worker_id=worker_id,
+                idempotency_key=intent.execution_request.idempotency_key,
+            )
+            if existing is not None:
+                return existing
+            raise
         self._state_machine.transition(
             run_id=intent.run_id,
             to_state=RunLifecycleState.SUMMARIZING,
@@ -516,6 +557,179 @@ class LocalProposalRunExecutor:
             )
         return list(snapshots.values())
 
+    def _existing_report_result(
+        self,
+        *,
+        queue_item_id: str,
+        run_id: str,
+        worker_id: str,
+        idempotency_key: str | None = None,
+    ) -> LoopExecutionResult | None:
+        existing = self._ledger.fetch_interactive_run_report(run_id=run_id)
+        if existing is None and idempotency_key is not None:
+            existing = self._ledger.fetch_interactive_run_report(
+                idempotency_key=idempotency_key
+            )
+        if existing is None and idempotency_key is None:
+            queue = self._ledger.fetch_queue_item(queue_item_id)
+            if queue is not None:
+                existing = self._ledger.fetch_interactive_run_report(
+                    idempotency_key=str(queue["idempotency_key"])
+                )
+        if existing is None:
+            return None
+        try:
+            self._ledger.claim_queue_item_for_run(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                worker_id=worker_id,
+                mode=RunMode.SCHEDULED.value,
+            )
+        except Exception:
+            pass
+        self._complete_claim_if_possible(
+            queue_item_id=queue_item_id,
+            run_id=run_id,
+            worker_id=worker_id,
+        )
+        return LoopExecutionResult(
+            queue_item_id=queue_item_id,
+            run_id=run_id,
+            queue_state=QueueJobState.COMPLETED,
+            report=existing,
+        )
+
+    def _complete_claim_if_possible(
+        self,
+        *,
+        queue_item_id: str,
+        run_id: str,
+        worker_id: str,
+    ) -> None:
+        try:
+            self._ledger.complete_queue_item(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                worker_id=worker_id,
+            )
+        except (KeyError, QueueMutationMismatchError):
+            pass
+
+
+class CodexBackedRunExecutor(LocalProposalRunExecutor):
+    """Production executor that runs queued work through `codex exec`."""
+
+    executor_kind = "codex"
+
+    def __init__(
+        self,
+        ledger: SQLitePersistenceLedger,
+        *,
+        runtime_config: CodexRuntimeConfig,
+        canonicalizer: CanonicalGraphService | None = None,
+        orchestrator: RunOrchestrator | None = None,
+        runtime: CodexRuntimeCoordinator | None = None,
+    ) -> None:
+        super().__init__(
+            ledger,
+            artifacts_root=runtime_config.artifact_root,
+            canonicalizer=canonicalizer,
+            orchestrator=orchestrator,
+        )
+        self._runtime = runtime or CodexRuntimeCoordinator(ledger, runtime_config)
+
+    def execute_item(
+        self,
+        *,
+        queue_item_id: str,
+        run_id: str,
+        worker_id: str,
+    ) -> LoopExecutionResult:
+        intent: RunIntent | None = None
+        try:
+            existing = self._existing_report_result(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                worker_id=worker_id,
+            )
+            if existing is not None:
+                return existing
+            intent = self._orchestrator.start_queued_run(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                worker_id=worker_id,
+                mode=RunMode.SCHEDULED,
+            )
+            existing = self._existing_report_result(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                worker_id=worker_id,
+                idempotency_key=intent.execution_request.idempotency_key,
+            )
+            if existing is not None:
+                return existing
+            runtime_result = self._runtime.execute(intent)
+            self._orchestrator.accept_competition_proposal(
+                intent=intent,
+                proposal=runtime_result.proposal,
+            )
+            report = self._canonicalize_and_persist(
+                intent=intent,
+                runtime_result=runtime_result,
+                worker_id=worker_id,
+            )
+            return LoopExecutionResult(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                queue_state=QueueJobState.COMPLETED,
+                report=report,
+            )
+        except CodexRuntimeError as exc:
+            self._fail_run_if_possible(run_id)
+            self._record_failure(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                worker_id=worker_id,
+                failure_code=exc.failure_code,
+                detail=exc.detail,
+                retryable=exc.retryable,
+            )
+            return LoopExecutionResult(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                queue_state=QueueJobState.QUEUED if exc.retryable else QueueJobState.DEAD_LETTER,
+                failure_code=exc.failure_code,
+                failure_detail=exc.detail,
+            )
+        except (CompetitionValidationError, InvalidRunTransitionError) as exc:
+            existing = self._existing_report_result(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                worker_id=worker_id,
+            )
+            if existing is not None:
+                return existing
+            self._fail_run_if_possible(run_id)
+            if intent is not None:
+                self._ledger.record_interactive_run_failure(
+                    self._failure_report(intent=intent, detail=str(exc))
+                )
+            self._record_failure(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                worker_id=worker_id,
+                failure_code=FailureCode.MALFORMED_PROPOSAL,
+                detail=str(exc),
+                retryable=False,
+            )
+            return LoopExecutionResult(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                queue_state=QueueJobState.DEAD_LETTER,
+                failure_code=FailureCode.MALFORMED_PROPOSAL,
+                failure_detail=str(exc),
+            )
+
 
 @dataclass(frozen=True)
 class WorkerLoopRunResult:
@@ -528,6 +742,8 @@ class WorkerLoopRunResult:
     malformed_proposal_streak: int
     yielded_count: int
     last_graph_digest: str | None
+    executor_kind: str
+    last_error: str | None
 
 
 class WorkerLoopService:
@@ -551,6 +767,7 @@ class WorkerLoopService:
             ledger,
             artifacts_root=artifacts_root or Path(".crb") / "worker-artifacts",
         )
+        self._executor_kind = str(getattr(self._executor, "executor_kind", "fixture"))
         self._yield_analyzer = yield_analyzer or YieldAnalyzer()
 
     def run(
@@ -571,6 +788,7 @@ class WorkerLoopService:
             topic_id=topic_id,
             worker_id=self._worker_id,
             lease_expires_at=start + timedelta(seconds=policy.lease_ttl_seconds),
+            executor_kind=self._executor_kind,
             now=start,
         )
         if lease is None:
@@ -585,6 +803,8 @@ class WorkerLoopService:
                 malformed_proposal_streak=0,
                 yielded_count=0,
                 last_graph_digest=None,
+                executor_kind=self._executor_kind,
+                last_error=None,
             )
 
         iterations = 0
@@ -592,6 +812,7 @@ class WorkerLoopService:
         consecutive_no_yield = 0
         malformed_streak = 0
         last_meaningful_change: str | None = None
+        last_error: str | None = None
         stop_reason: WorkerLoopStopReason | None = None
         stop_state = "stopped"
 
@@ -629,11 +850,21 @@ class WorkerLoopService:
                 break
 
             before = self._graph_summary(topic_id)
-            result = self._executor.execute_item(
-                queue_item_id=str(row["id"]),
-                run_id=str(row["requested_run_id"]),
-                worker_id=self._worker_id,
-            )
+            try:
+                result = self._executor.execute_item(
+                    queue_item_id=str(row["id"]),
+                    run_id=str(row["requested_run_id"]),
+                    worker_id=self._worker_id,
+                )
+                executor_crashed = False
+            except Exception as exc:
+                executor_crashed = True
+                last_error = f"{type(exc).__name__}: {exc}"
+                result = self._dead_letter_unhandled_executor_error(
+                    queue_item_id=str(row["id"]),
+                    run_id=str(row["requested_run_id"]),
+                    detail=last_error,
+                )
             after = self._graph_summary(topic_id)
             decision = self._yield_analyzer.analyze(
                 before=before,
@@ -656,6 +887,8 @@ class WorkerLoopService:
                 malformed_streak += 1
             else:
                 malformed_streak = 0
+            if result.failure_detail:
+                last_error = result.failure_detail
 
             self._ledger.append_worker_loop_iteration(
                 loop_id=loop_id,
@@ -673,12 +906,17 @@ class WorkerLoopService:
                 run_id=result.run_id,
                 queue_state=result.queue_state.value,
                 failure_code=None if result.failure_code is None else result.failure_code.value,
+                failure_detail=result.failure_detail,
                 consecutive_no_yield=consecutive_no_yield,
                 malformed_proposal_streak=malformed_streak,
                 last_meaningful_change=last_meaningful_change,
                 created_at=current_time,
             )
 
+            if executor_crashed:
+                stop_reason = WorkerLoopStopReason.EXECUTOR_ERROR
+                stop_state = "blocked"
+                break
             if malformed_streak >= policy.max_malformed_proposals:
                 stop_reason = WorkerLoopStopReason.REPEATED_MALFORMED_PROPOSAL
                 stop_state = "blocked"
@@ -706,6 +944,8 @@ class WorkerLoopService:
             last_graph_digest=(
                 None if stopped is None else stopped.get("last_graph_digest")
             ),
+            executor_kind=self._executor_kind,
+            last_error=None if stopped is None else stopped.get("last_error"),
         )
 
     def stop(self, *, topic_id: str) -> dict[str, object]:
@@ -734,6 +974,8 @@ class WorkerLoopService:
                 "consecutive_no_yield": 0,
                 "malformed_proposal_streak": 0,
                 "stop_reason": None,
+                "executor_kind": None,
+                "last_error": None,
                 "yield_history": [],
                 "last_meaningful_graph_change": None,
             }
@@ -743,6 +985,7 @@ class WorkerLoopService:
             "topic_id": topic_id,
             "loop_id": loop["loop_id"],
             "worker_id": loop["worker_id"],
+            "executor_kind": loop["executor_kind"],
             "state": loop["state"],
             "active": loop["state"] == "running",
             "started_at": loop["started_at"],
@@ -756,10 +999,60 @@ class WorkerLoopService:
             "last_queue_item_id": loop["last_queue_item_id"],
             "last_run_id": loop["last_run_id"],
             "last_graph_digest": loop["last_graph_digest"],
+            "last_error": loop["last_error"],
             "last_meaningful_graph_change": loop["last_meaningful_change"],
             "yield_history": loop["yield_history"],
             "iterations": iterations,
         }
+
+    def _dead_letter_unhandled_executor_error(
+        self,
+        *,
+        queue_item_id: str,
+        run_id: str,
+        detail: str,
+    ) -> LoopExecutionResult:
+        self._dead_letter_queue_item_after_executor_error(
+            queue_item_id=queue_item_id,
+            run_id=run_id,
+            detail=detail,
+        )
+        return LoopExecutionResult(
+            queue_item_id=queue_item_id,
+            run_id=run_id,
+            queue_state=QueueJobState.DEAD_LETTER,
+            failure_code=FailureCode.QUEUE_MUTATION_MISMATCH,
+            failure_detail=detail,
+        )
+
+    def _dead_letter_queue_item_after_executor_error(
+        self,
+        *,
+        queue_item_id: str,
+        run_id: str,
+        detail: str,
+    ) -> None:
+        try:
+            self._ledger.record_queue_dead_letter(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                worker_id=self._worker_id,
+                failure_code=FailureCode.QUEUE_MUTATION_MISMATCH.value,
+                detail=detail,
+                retryable=False,
+                human_review_required=True,
+            )
+        except Exception:
+            try:
+                self._ledger.record_queue_dead_letter(
+                    queue_item_id=queue_item_id,
+                    failure_code=FailureCode.QUEUE_MUTATION_MISMATCH.value,
+                    detail=detail,
+                    retryable=False,
+                    human_review_required=True,
+                )
+            except Exception:
+                pass
 
     def _graph_summary(self, topic_id: str) -> GraphChangeSummary:
         graph = self._ledger.fetch_latest_canonical_graph_write(topic_id=topic_id)
