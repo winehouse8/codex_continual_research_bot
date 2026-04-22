@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
@@ -217,6 +217,39 @@ class FakeLoopExecutor:
         )
 
 
+@dataclass
+class MutableClock:
+    current: datetime
+
+    def now(self) -> datetime:
+        return self.current
+
+    def advance(self, delta: timedelta) -> None:
+        self.current = self.current + delta
+
+
+@dataclass
+class SlowLoopExecutor(FakeLoopExecutor):
+    clock: MutableClock | None = None
+    elapsed_per_item: timedelta = timedelta(seconds=0)
+
+    def execute_item(
+        self,
+        *,
+        queue_item_id: str,
+        run_id: str,
+        worker_id: str,
+    ) -> LoopExecutionResult:
+        result = super().execute_item(
+            queue_item_id=queue_item_id,
+            run_id=run_id,
+            worker_id=worker_id,
+        )
+        assert self.clock is not None
+        self.clock.advance(self.elapsed_per_item)
+        return result
+
+
 def test_yielded_iteration_when_graph_digest_changes() -> None:
     decision = YieldAnalyzer().analyze(
         before=GraphChangeSummary("sha256:before", 1, 1),
@@ -315,6 +348,35 @@ def test_convergence_policy_stops_at_budget_threshold(tmp_path: Path) -> None:
     assert result.stop_reason == WorkerLoopStopReason.BUDGET_EXHAUSTED
     assert result.state == "blocked"
     assert result.iteration_count == 0
+
+
+def test_runtime_budget_uses_elapsed_clock_time(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path, job_count=2)
+    clock = MutableClock(NOW)
+    executor = SlowLoopExecutor(
+        ledger,
+        ["yield", "yield"],
+        clock=clock,
+        elapsed_per_item=timedelta(seconds=3),
+    )
+
+    result = WorkerLoopService(
+        ledger,
+        executor=executor,
+        clock=clock.now,
+    ).run(
+        topic_id="topic_001",
+        policy=WorkerLoopPolicy(
+            max_iterations=5,
+            max_consecutive_no_yield=5,
+            max_runtime_seconds=2,
+        ),
+        now=NOW,
+    )
+
+    assert result.stop_reason == WorkerLoopStopReason.BUDGET_EXHAUSTED
+    assert result.state == "blocked"
+    assert result.iteration_count == 1
 
 
 def test_repeated_malformed_proposal_stops_without_infinite_retry(tmp_path: Path) -> None:

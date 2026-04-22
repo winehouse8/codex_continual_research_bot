@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -540,9 +541,12 @@ class WorkerLoopService:
         executor: WorkerLoopRunExecutor | None = None,
         yield_analyzer: YieldAnalyzer | None = None,
         artifacts_root: Path | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._ledger = ledger
         self._worker_id = worker_id
+        self._clock = clock or _utcnow
+        self._uses_injected_clock = clock is not None
         self._executor = executor or LocalProposalRunExecutor(
             ledger,
             artifacts_root=artifacts_root or Path(".crb") / "worker-artifacts",
@@ -557,7 +561,7 @@ class WorkerLoopService:
         now: datetime | None = None,
     ) -> WorkerLoopRunResult:
         policy = policy or WorkerLoopPolicy()
-        start = now or _utcnow()
+        start = now or self._clock()
         previous = self._ledger.fetch_worker_loop(topic_id=topic_id)
         previous_loop_id = "" if previous is None else str(previous["loop_id"])
         loop_seed = f"{topic_id}|{self._worker_id}|{start.isoformat()}|{previous_loop_id}"
@@ -592,7 +596,11 @@ class WorkerLoopService:
         stop_state = "stopped"
 
         while True:
-            current_time = start + timedelta(seconds=iterations)
+            current_time = self._loop_time(
+                start=start,
+                iterations=iterations,
+                fixed_now=now,
+            )
             self._ledger.heartbeat_worker_loop(
                 loop_id=loop_id,
                 lease_expires_at=current_time + timedelta(seconds=policy.lease_ttl_seconds),
@@ -766,3 +774,14 @@ class WorkerLoopService:
             node_count=int(graph["node_count"]),
             edge_count=int(graph["edge_count"]),
         )
+
+    def _loop_time(
+        self,
+        *,
+        start: datetime,
+        iterations: int,
+        fixed_now: datetime | None,
+    ) -> datetime:
+        if fixed_now is not None and not self._uses_injected_clock:
+            return start + timedelta(seconds=iterations)
+        return self._clock()
