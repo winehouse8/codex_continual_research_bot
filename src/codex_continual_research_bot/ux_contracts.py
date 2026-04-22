@@ -24,6 +24,7 @@ class CliCommandCategory(str, Enum):
     TOPIC = "topic"
     RUN = "run"
     QUEUE = "queue"
+    WORKER = "worker"
     MEMORY = "memory"
     GRAPH = "graph"
     OPS = "ops"
@@ -40,6 +41,8 @@ class CliStateMutation(str, Enum):
     ENQUEUE_RUN = "enqueue_run"
     ENQUEUE_USER_INPUT = "enqueue_user_input"
     ENQUEUE_REPAIR_JOB = "enqueue_repair_job"
+    EXECUTE_QUEUE = "execute_queue"
+    STOP_WORKER_LOOP = "stop_worker_loop"
 
 
 class ConfidenceBand(str, Enum):

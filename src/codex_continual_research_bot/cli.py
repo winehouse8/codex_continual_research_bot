@@ -48,6 +48,21 @@ class CliBackend(Protocol):
 
     def queue_dead_letter(self, *, queue_item_id: str) -> dict[str, object]: ...
 
+    def worker_run(
+        self,
+        *,
+        topic_id: str,
+        loop: bool,
+        max_iterations: int,
+        max_consecutive_no_yield: int,
+        max_malformed_proposals: int,
+        max_runtime_seconds: int,
+    ) -> dict[str, object]: ...
+
+    def worker_status(self, *, topic_id: str) -> dict[str, object]: ...
+
+    def worker_stop(self, *, topic_id: str) -> dict[str, object]: ...
+
     def memory_snapshot(self, *, topic_id: str) -> dict[str, object]: ...
 
     def memory_conflicts(self, *, topic_id: str) -> dict[str, object]: ...
@@ -155,6 +170,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     queue_dead = _add_leaf(queue_sub, "dead-letter", "Inspect a dead-letter item.", "queue.dead-letter")
     queue_dead.add_argument("queue_item_id")
+
+    worker = subparsers.add_parser("worker", help="Run and inspect autonomous topic worker loops.")
+    worker_sub = worker.add_subparsers(dest="action", required=True)
+    worker_run = _add_leaf(worker_sub, "run", "Run queued topic research tasks.", "worker.run")
+    worker_run.add_argument("--topic", dest="topic_id", required=True)
+    worker_run.add_argument("--loop", action="store_true", help="Continue until convergence or stop policy.")
+    worker_run.add_argument("--max-iterations", type=int, default=10)
+    worker_run.add_argument("--max-consecutive-no-yield", type=int, default=2)
+    worker_run.add_argument("--max-malformed-proposals", type=int, default=2)
+    worker_run.add_argument("--max-runtime-seconds", type=int, default=1800)
+    worker_status = _add_leaf(
+        worker_sub,
+        "status",
+        "Show autonomous worker loop state.",
+        "worker.status",
+    )
+    worker_status.add_argument("--topic", dest="topic_id", required=True)
+    worker_stop = _add_leaf(
+        worker_sub,
+        "stop",
+        "Stop the active worker loop for a topic.",
+        "worker.stop",
+    )
+    worker_stop.add_argument("--topic", dest="topic_id", required=True)
 
     memory = subparsers.add_parser("memory", help="Inspect backend-owned memory state.")
     memory_sub = memory.add_subparsers(dest="action", required=True)
@@ -283,6 +322,19 @@ def dispatch(args: argparse.Namespace, backend: CliBackend) -> dict[str, object]
         )
     if command_id == "queue.dead-letter":
         return backend.queue_dead_letter(queue_item_id=args.queue_item_id)
+    if command_id == "worker.run":
+        return backend.worker_run(
+            topic_id=args.topic_id,
+            loop=args.loop,
+            max_iterations=args.max_iterations,
+            max_consecutive_no_yield=args.max_consecutive_no_yield,
+            max_malformed_proposals=args.max_malformed_proposals,
+            max_runtime_seconds=args.max_runtime_seconds,
+        )
+    if command_id == "worker.status":
+        return backend.worker_status(topic_id=args.topic_id)
+    if command_id == "worker.stop":
+        return backend.worker_stop(topic_id=args.topic_id)
     if command_id == "memory.snapshot":
         return backend.memory_snapshot(topic_id=args.topic_id)
     if command_id == "memory.conflicts":

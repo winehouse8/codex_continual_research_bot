@@ -308,6 +308,7 @@ def test_cli_help_lists_phase13_commands() -> None:
     assert "topic" in help_text
     assert "run" in help_text
     assert "queue" in help_text
+    assert "worker" in help_text
     assert "memory" in help_text
     assert "ops" in help_text
 
@@ -470,6 +471,79 @@ def test_run_start_status_resume_flow(tmp_path: Path) -> None:
     assert code == 0
     assert resume.data["run_id"] == run_id
     assert resume.data["queue"]["kind"] == "run.resume"
+
+
+def test_worker_run_status_stop_json_flow(tmp_path: Path) -> None:
+    backend = LocalBackendGateway(db_path=tmp_path / "crb.sqlite3", workspace_root=tmp_path)
+    run_cli(["init"], backend)
+    run_cli(
+        [
+            "topic",
+            "create",
+            "Codex auth boundary",
+            "--objective",
+            "Track session ownership risk",
+        ],
+        backend,
+    )
+    run_cli(
+        [
+            "run",
+            "start",
+            "topic_codex_auth_boundary",
+            "--input",
+            "counterargument: warning-only stale sessions may be safe",
+        ],
+        backend,
+    )
+
+    code, output, _ = run_cli(
+        [
+            "worker",
+            "run",
+            "--topic",
+            "topic_codex_auth_boundary",
+            "--loop",
+            "--max-iterations",
+            "2",
+            "--json",
+        ],
+        backend,
+    )
+    result = parsed_json(output)
+    assert code == 0
+    assert result.command_id == "worker.run"
+    assert result.data["iteration_count"] == 1
+    assert result.data["yielded_count"] == 1
+    assert result.data["stop_reason"] in {
+        "empty_queue_paused_active_conflicts",
+        "empty_queue_converged",
+    }
+
+    code, output, _ = run_cli(
+        [
+            "worker",
+            "status",
+            "--topic",
+            "topic_codex_auth_boundary",
+            "--json",
+        ],
+        backend,
+    )
+    status = parsed_json(output)
+    assert code == 0
+    assert status.command_id == "worker.status"
+    assert status.data["iteration_count"] == 1
+    assert status.data["last_meaningful_graph_change"] is not None
+
+    code, output, _ = run_cli(
+        ["worker", "stop", "--topic", "topic_codex_auth_boundary", "--json"],
+        backend,
+    )
+    stopped = parsed_json(output)
+    assert code == 0
+    assert stopped.command_id == "worker.stop"
+    assert stopped.data["worker_loop"]["stop_reason"] == "stopped_by_operator"
 
 
 def test_queue_dead_letter_retry_flow_shows_failure_classification(tmp_path: Path) -> None:

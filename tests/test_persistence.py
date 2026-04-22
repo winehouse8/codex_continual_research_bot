@@ -65,6 +65,7 @@ def test_happy_path_migration_creates_phase1_tables(tmp_path: Path) -> None:
         "0003_phase8_session_auth_boundaries",
         "0004_phase9_interactive_run_path",
         "0005_phase11_operational_controls",
+        "0006_phase21_worker_loop_state",
     ]
     with ledger.connect() as connection:
         tables = {
@@ -90,6 +91,8 @@ def test_happy_path_migration_creates_phase1_tables(tmp_path: Path) -> None:
         "canonical_graph_writes",
         "operation_audit_events",
         "operator_alerts",
+        "worker_loops",
+        "worker_loop_iterations",
     } <= tables
 
 
@@ -105,6 +108,7 @@ def test_migration_rerun_is_idempotent(tmp_path: Path) -> None:
         "0003_phase8_session_auth_boundaries",
         "0004_phase9_interactive_run_path",
         "0005_phase11_operational_controls",
+        "0006_phase21_worker_loop_state",
     ]
     assert second == []
 

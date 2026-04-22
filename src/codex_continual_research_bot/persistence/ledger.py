@@ -528,6 +528,25 @@ class SQLitePersistenceLedger:
             ).fetchone()
         return None if row is None else dict(row)
 
+    def fetch_next_claimable_queue_item_for_topic(
+        self,
+        *,
+        topic_id: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM queue_items
+                WHERE topic_id = ? AND state = ? AND available_at <= ?
+                ORDER BY priority DESC, available_at ASC, created_at ASC
+                LIMIT 1
+                """,
+                (topic_id, QueueJobState.QUEUED.value, _normalize_timestamp(now)),
+            ).fetchone()
+        return None if row is None else dict(row)
+
     def append_run_event(self, event: RuntimeEvent) -> None:
         payload_json = json.dumps(event.payload.model_dump(mode="json"), sort_keys=True)
         try:
@@ -668,6 +687,28 @@ class SQLitePersistenceLedger:
                 WHERE run_id = ?
                 """,
                 (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        data["graph_json"] = json.loads(data["graph_json"])
+        return data
+
+    def fetch_latest_canonical_graph_write(
+        self,
+        *,
+        topic_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM canonical_graph_writes
+                WHERE topic_id = ?
+                ORDER BY created_at DESC, run_id DESC
+                LIMIT 1
+                """,
+                (topic_id,),
             ).fetchone()
         if row is None:
             return None
@@ -1481,6 +1522,319 @@ class SQLitePersistenceLedger:
             except Exception:
                 connection.execute("ROLLBACK")
                 raise
+
+    def acquire_worker_loop(
+        self,
+        *,
+        loop_id: str,
+        topic_id: str,
+        worker_id: str,
+        lease_expires_at: datetime,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        current_time = _normalize_timestamp(now)
+        expires_at = _normalize_timestamp(lease_expires_at)
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                existing = connection.execute(
+                    """
+                    SELECT *
+                    FROM worker_loops
+                    WHERE topic_id = ?
+                    """,
+                    (topic_id,),
+                ).fetchone()
+                if (
+                    existing is not None
+                    and existing["state"] == "running"
+                    and existing["lease_expires_at"] > current_time
+                    and existing["loop_id"] != loop_id
+                ):
+                    connection.execute("ROLLBACK")
+                    return None
+
+                connection.execute(
+                    """
+                    INSERT INTO worker_loops(
+                        loop_id,
+                        topic_id,
+                        worker_id,
+                        state,
+                        started_at,
+                        heartbeat_at,
+                        lease_expires_at,
+                        stopped_at,
+                        stop_reason,
+                        iteration_count,
+                        consecutive_no_yield,
+                        malformed_proposal_streak,
+                        last_queue_item_id,
+                        last_run_id,
+                        last_graph_digest,
+                        last_meaningful_change,
+                        yield_history_json,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, 0, 0, NULL, NULL, NULL, NULL, '[]', ?)
+                    ON CONFLICT(topic_id) DO UPDATE SET
+                        loop_id = excluded.loop_id,
+                        worker_id = excluded.worker_id,
+                        state = excluded.state,
+                        started_at = excluded.started_at,
+                        heartbeat_at = excluded.heartbeat_at,
+                        lease_expires_at = excluded.lease_expires_at,
+                        stopped_at = NULL,
+                        stop_reason = NULL,
+                        iteration_count = 0,
+                        consecutive_no_yield = 0,
+                        malformed_proposal_streak = 0,
+                        last_queue_item_id = NULL,
+                        last_run_id = NULL,
+                        last_graph_digest = NULL,
+                        last_meaningful_change = NULL,
+                        yield_history_json = '[]',
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        loop_id,
+                        topic_id,
+                        worker_id,
+                        "running",
+                        current_time,
+                        current_time,
+                        expires_at,
+                        current_time,
+                    ),
+                )
+                row = connection.execute(
+                    "SELECT * FROM worker_loops WHERE topic_id = ?",
+                    (topic_id,),
+                ).fetchone()
+                connection.execute("COMMIT")
+                return None if row is None else dict(row)
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+
+    def heartbeat_worker_loop(
+        self,
+        *,
+        loop_id: str,
+        lease_expires_at: datetime,
+        now: datetime | None = None,
+    ) -> None:
+        with self.connect() as connection, connection:
+            cursor = connection.execute(
+                """
+                UPDATE worker_loops
+                SET heartbeat_at = ?,
+                    lease_expires_at = ?,
+                    updated_at = ?
+                WHERE loop_id = ? AND state = 'running'
+                """,
+                (
+                    _normalize_timestamp(now),
+                    _normalize_timestamp(lease_expires_at),
+                    _normalize_timestamp(now),
+                    loop_id,
+                ),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(f"worker loop {loop_id} is not running")
+
+    def append_worker_loop_iteration(
+        self,
+        *,
+        loop_id: str,
+        topic_id: str,
+        iteration: int,
+        yielded: bool,
+        yield_reason: str,
+        graph_digest_before: str | None,
+        graph_digest_after: str | None,
+        node_count_before: int | None,
+        node_count_after: int | None,
+        edge_count_before: int | None,
+        edge_count_after: int | None,
+        queue_item_id: str | None,
+        run_id: str | None,
+        queue_state: str | None,
+        failure_code: str | None,
+        consecutive_no_yield: int,
+        malformed_proposal_streak: int,
+        last_meaningful_change: str | None,
+        created_at: datetime | None = None,
+    ) -> None:
+        current_time = _normalize_timestamp(created_at)
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                loop = connection.execute(
+                    """
+                    SELECT yield_history_json
+                    FROM worker_loops
+                    WHERE loop_id = ?
+                    """,
+                    (loop_id,),
+                ).fetchone()
+                if loop is None:
+                    raise KeyError(f"worker loop {loop_id} does not exist")
+                history = json.loads(loop["yield_history_json"])
+                history.append(
+                    {
+                        "iteration": iteration,
+                        "yielded": yielded,
+                        "reason": yield_reason,
+                        "queue_item_id": queue_item_id,
+                        "run_id": run_id,
+                        "graph_digest_after": graph_digest_after,
+                        "created_at": current_time,
+                    }
+                )
+                connection.execute(
+                    """
+                    INSERT INTO worker_loop_iterations(
+                        loop_id,
+                        iteration,
+                        topic_id,
+                        queue_item_id,
+                        run_id,
+                        yielded,
+                        yield_reason,
+                        graph_digest_before,
+                        graph_digest_after,
+                        node_count_before,
+                        node_count_after,
+                        edge_count_before,
+                        edge_count_after,
+                        queue_state,
+                        failure_code,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        loop_id,
+                        iteration,
+                        topic_id,
+                        queue_item_id,
+                        run_id,
+                        int(yielded),
+                        yield_reason,
+                        graph_digest_before,
+                        graph_digest_after,
+                        node_count_before,
+                        node_count_after,
+                        edge_count_before,
+                        edge_count_after,
+                        queue_state,
+                        failure_code,
+                        current_time,
+                    ),
+                )
+                connection.execute(
+                    """
+                    UPDATE worker_loops
+                    SET iteration_count = ?,
+                        consecutive_no_yield = ?,
+                        malformed_proposal_streak = ?,
+                        last_queue_item_id = ?,
+                        last_run_id = ?,
+                        last_graph_digest = ?,
+                        last_meaningful_change = ?,
+                        yield_history_json = ?,
+                        updated_at = ?
+                    WHERE loop_id = ?
+                    """,
+                    (
+                        iteration,
+                        consecutive_no_yield,
+                        malformed_proposal_streak,
+                        queue_item_id,
+                        run_id,
+                        graph_digest_after,
+                        last_meaningful_change,
+                        json.dumps(history, sort_keys=True),
+                        current_time,
+                        loop_id,
+                    ),
+                )
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+
+    def stop_worker_loop(
+        self,
+        *,
+        loop_id: str,
+        state: str,
+        stop_reason: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        current_time = _normalize_timestamp(now)
+        with self.connect() as connection, connection:
+            connection.execute(
+                """
+                UPDATE worker_loops
+                SET state = ?,
+                    stopped_at = ?,
+                    stop_reason = ?,
+                    updated_at = ?
+                WHERE loop_id = ?
+                """,
+                (state, current_time, stop_reason, current_time, loop_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM worker_loops WHERE loop_id = ?",
+                (loop_id,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def stop_worker_loop_for_topic(
+        self,
+        *,
+        topic_id: str,
+        stop_reason: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        current = self.fetch_worker_loop(topic_id=topic_id)
+        if current is None:
+            return None
+        return self.stop_worker_loop(
+            loop_id=str(current["loop_id"]),
+            state="stopped",
+            stop_reason=stop_reason,
+            now=now,
+        )
+
+    def fetch_worker_loop(self, *, topic_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM worker_loops
+                WHERE topic_id = ?
+                """,
+                (topic_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        data["yield_history"] = json.loads(data.pop("yield_history_json"))
+        return data
+
+    def list_worker_loop_iterations(self, *, loop_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM worker_loop_iterations
+                WHERE loop_id = ?
+                ORDER BY iteration ASC
+                """,
+                (loop_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def _validate_claim_for_mutation(
         self,

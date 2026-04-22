@@ -21,6 +21,8 @@ crb init --json
 crb doctor --json
 crb topic create "Codex auth boundary" --objective "Track session ownership risk" --json
 crb run start topic_codex_auth_boundary --input "counterargument: warning-only stale sessions may be safe" --json
+crb worker run --topic topic_codex_auth_boundary --loop --max-iterations 3 --json
+crb worker status --topic topic_codex_auth_boundary --json
 crb topic show topic_codex_auth_boundary
 crb memory hypotheses topic_codex_auth_boundary --json
 crb memory conflicts topic_codex_auth_boundary --json
@@ -74,6 +76,9 @@ Web UI Projection / CLI Summary
 | run 시작 | `crb run start topic_codex_auth_boundary --input "counterargument: warning-only stale sessions may be safe" --json` |
 | run 상태 보기 | `crb run status "$run_id" --json` |
 | run 재개 요청 | `crb run resume "$run_id"` |
+| worker loop 실행 | `crb worker run --topic topic_codex_auth_boundary --loop --max-iterations 3 --json` |
+| worker loop 상태 | `crb worker status --topic topic_codex_auth_boundary --json` |
+| worker loop 중지 | `crb worker stop --topic topic_codex_auth_boundary --json` |
 | queue 보기 | `crb queue list --topic topic_codex_auth_boundary --json` |
 | dead-letter 확인 | `crb queue dead-letter "$queue_item_id"` |
 | queue retry 요청 | `crb queue retry "<dead-letter-queue-item-id>" --reason "operator confirmed transient transport failure" --json` |
@@ -103,6 +108,9 @@ crb topic show topic_codex_auth_boundary --json
 crb run start topic_codex_auth_boundary --input "counterargument: warning-only stale sessions may be safe" --json
 crb run status "$run_id" --json
 crb run resume "$run_id"
+crb worker run --topic topic_codex_auth_boundary --loop --max-iterations 3 --json
+crb worker status --topic topic_codex_auth_boundary --json
+crb worker stop --topic topic_codex_auth_boundary --json
 crb queue list --topic topic_codex_auth_boundary --json
 crb queue retry "<dead-letter-queue-item-id>" --reason "operator confirmed transient transport failure" --json
 crb queue dead-letter "$queue_item_id"
@@ -212,12 +220,13 @@ Web UI는 topic 생성, run 시작, queue retry 같은 write 작업을 제공하
 | topic overview | `GET /api/topics/{topic_id}` |
 | topic runs | `GET /api/topics/{topic_id}/runs` |
 | topic queue | `GET /api/topics/{topic_id}/queue` |
+| topic worker loop | `GET /api/topics/{topic_id}/worker-loop` |
 | topic memory | `GET /api/topics/{topic_id}/memory` |
 | topic graph latest | `GET /api/topics/{topic_id}/graph/latest` |
 | topic graph history | `GET /api/topics/{topic_id}/graph/history` |
 | topic dashboard bundle | `GET /api/web/topics/{topic_id}/dashboard` |
 
-`dashboard` bundle은 `run_state.status_counts`, `run_state.running_now`, `run_state.queue_groups`, `run_state.run_timeline_items`를 포함합니다. `running_now`는 `objective`, `run_id`, `queue_item_id`, `latest_event`, 관련 graph node 요약을 함께 보여주므로 현재 작업이 실제 실행 중인지, 대기 중인지, stale claim인지, dead-letter인지 바로 판독할 수 있습니다.
+`dashboard` bundle은 `worker_loop`, `run_state.status_counts`, `run_state.running_now`, `run_state.queue_groups`, `run_state.run_timeline_items`를 포함합니다. `worker_loop`는 active state, iteration count, consecutive no-yield streak, stop reason, last meaningful graph change를 보여줍니다. `running_now`는 `objective`, `run_id`, `queue_item_id`, `latest_event`, 관련 graph node 요약을 함께 보여주므로 현재 작업이 실제 실행 중인지, 대기 중인지, stale claim인지, dead-letter인지 바로 판독할 수 있습니다.
 
 모든 non-GET 요청은 `read_only_web_surface`로 거부됩니다. Graph tab은 current best / challenger / evidence / conflict / provenance filter, selected node detail panel, provenance selector, visual empty/error state를 제공합니다.
 
