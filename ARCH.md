@@ -1084,3 +1084,82 @@ Dashboard는 아래 정보를 보여줘야 한다.
 - `worker run/status/stop` CLI JSON contract tests
 - loop status Web API/view model tests
 - running loop와 no-yield/converged state를 보여주는 Playwright smoke screenshot
+
+## 26. Korean First-User Dashboard UX Architecture
+
+### 26.1 Boundary
+
+이 slice는 backend state authority를 바꾸지 않고, Web dashboard의 read model과 presentation layer를 first-user comprehension 중심으로 재설계한다. UI copy는 기본 한국어이며, raw ids / commands / timestamps는 정확성을 위해 원문을 유지한다.
+
+### 26.2 Proposed Modules / Surfaces
+
+```text
+src/codex_continual_research_bot/web.py
+src/codex_continual_research_bot/web_static/app.js
+src/codex_continual_research_bot/web_static/index.html
+src/codex_continual_research_bot/web_static/styles.css
+src/codex_continual_research_bot/ux_contracts.py
+```
+
+추가 또는 강화할 read model:
+
+```text
+RunTimingView
+DashboardGlossaryEntry
+DashboardHelpSection
+QueueStateHelp
+GraphLegendView
+```
+
+### 26.3 Run Timing View Model
+
+Runs view는 각 run/queue item에 대해 아래 normalized fields를 제공해야 한다.
+
+```text
+requested_at
+claimed_at
+started_at
+completed_at
+failed_at
+stopped_at
+latest_event_at
+duration_seconds
+duration_label
+raw_timestamps
+```
+
+DB에 없는 timestamp는 `null`로 표시하되, UI에서 “기록 없음”과 “아직 완료 전”을 구분한다.
+
+### 26.4 Glossary / Help Model
+
+Graph legend와 도움말은 하드코딩된 산발적 문자열이 아니라 테스트 가능한 구조로 관리한다.
+
+```text
+term
+short_label
+korean_label
+plain_explanation
+why_it_matters
+example
+```
+
+필수 glossary term은 `TOP`, `HYP`, `CLA`, `EVI`, `PRO`, `CON`, `supports`, `challenges`, `visualizes`, `Dead-letter`, `Queue`, `Worker loop`다.
+
+### 26.5 UX Layout Principles
+
+- 첫 화면은 “현재 실행 상태”와 “이 dashboard를 읽는 법”을 우선한다.
+- 탭마다 “이 탭에서 확인할 것”을 한 문장으로 제공한다.
+- 전문 용어는 hover에 숨기기만 하지 말고 visible glossary 또는 `?` disclosure로 접근 가능해야 한다.
+- Dead-letter와 malformed proposal은 실패를 숨기지 않고, 다음 행동을 제안한다.
+- Graph의 약어 badge는 색상만으로 의미를 전달하면 안 된다.
+- 시간 정보는 상대 시간과 원본 timestamp를 함께 제공한다.
+
+### 26.6 Testing Strategy
+
+- view model unit tests for run timing derivation
+- glossary contract tests for required terms
+- Korean copy regression tests for tabs/cards/help
+- Queue state help tests for dead-letter/stale/retryable/human-review-required
+- Playwright E2E screenshots for Overview, Graph, Runs, Queue, Memory, Help overlay
+- screenshot assertions that Graph legend includes Korean labels for `CLA`, `HYP`, `EVI`, `PRO`
+- screenshot assertions that Runs tab includes requested/started/completed/duration labels

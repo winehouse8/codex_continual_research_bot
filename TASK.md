@@ -1174,6 +1174,68 @@ Exit gate:
 - stop reason, iteration count, consecutive no-yield, last meaningful graph change가 backend ledger와 UI에 남아야 한다.
 - loop가 멈춘 뒤 다시 시작해도 idempotency와 queue claim safety가 유지되어야 한다.
 
+
+## Phase 22. Korean First-User Dashboard UX Overhaul And Run Timing
+
+목적:
+처음 보는 사용자가 dashboard만 보고 연구 상태, graph 의미, run 시간, queue/dead-letter 의미, 다음 행동을 이해할 수 있도록 Web UI를 한국어-first UX로 전면 개선한다.
+
+Includes:
+
+- Dashboard 기본 사용자-facing copy 한국어화
+- Overview / Graph / Runs / Queue / Memory 각 탭 상단 도움말
+- “대시보드 읽는 법” help panel 또는 overlay
+- Graph legend / glossary: `TOP`, `HYP`, `CLA`, `EVI`, `PRO`, `CON`, `supports`, `challenges`, `visualizes`
+- Runs 탭 run별 요청/시작/완료/실패/중단 시각과 duration 표시
+- Queue 탭 `Queued`, `Running/Claimed`, `Completed`, `Dead-letter`, `Stale` 설명
+- Dead-letter의 failure code, retry 가능 여부, human-review-required, 다음 행동 설명
+- source-of-truth / projection 차이를 쉬운 한국어로 설명
+- Web UI screenshot artifact 갱신
+
+Artifacts:
+
+- Web view model / API 확장
+- Korean dashboard copy / glossary data
+- CSS/layout redesign for first-user readability
+- README 또는 docs의 dashboard 사용 설명 업데이트
+- Playwright E2E screenshots: Overview / Graph / Runs / Queue / Memory / Help
+
+Depends on:
+
+- Phase 17
+- Phase 18
+- Phase 20
+- Phase 21
+
+Required tests:
+
+- unit: run timing view model derives requested/claimed/completed/duration labels
+- unit: missing timestamps are shown as unknown/not-yet-completed without crashing
+- unit: glossary includes TOP/HYP/CLA/EVI/PRO/CON/supports/challenges/visualizes/dead-letter
+- unit: queue state help includes retryable and human-review-required guidance
+- copy regression: dashboard primary user-facing labels are Korean by default
+- Playwright E2E: Graph screenshot shows Korean legend and acronym explanations
+- Playwright E2E: Runs screenshot shows start/end/duration or unknown/not-yet-completed states
+- Playwright E2E: Queue screenshot explains Dead-letter and next action
+- Playwright E2E: Help panel/overlay is reachable and screenshot artifact is recorded
+
+Failure modes:
+
+- 처음 보는 사용자가 `CLA`, `HYP`, `EVI`, `PRO` 의미를 몰라 graph를 해석하지 못함
+- Runs 탭에서 언제 실행됐고 언제 끝났는지 몰라 연구 진행 시간을 판단하지 못함
+- Dead-letter가 무엇인지 몰라 실패/보류/재시도 가능성을 구분하지 못함
+- dashboard가 영어/내부 용어 중심이라 한국어 사용자에게 불친절함
+- 도움말이 README에만 있고 dashboard 안에서는 찾을 수 없음
+- screenshot 없이 DOM/unit test만 통과해 실제 first-user UX가 검증되지 않음
+
+Exit gate:
+
+- 처음 보는 사용자가 dashboard 안의 도움말만으로 각 탭의 의미와 다음 행동을 이해할 수 있어야 한다.
+- Graph 탭에서 약어 badge와 edge 의미가 한국어로 설명되어야 한다.
+- Runs 탭에서 run timing과 duration이 보여야 한다.
+- Queue 탭에서 Dead-letter의 의미와 조치 방향이 보여야 한다.
+- Playwright screenshot artifact가 Linear/PR handoff에 남아야 한다.
+
 ## 6. Cross-Phase Dependency Summary
 
 권장 구현 순서:
@@ -1200,6 +1262,7 @@ Exit gate:
 20. Phase 19: web UX final audit / first research demo
 21. Phase 20: visual run-state dashboard / Playwright UX verification
 22. Phase 21: autonomous research worker loop / convergence stop
+23. Phase 22: Korean first-user dashboard UX / run timing / glossary
 
 이 순서를 바꾸면 생기는 대표 리스크:
 
@@ -1232,3 +1295,4 @@ Exit gate:
 - localhost web UI가 conflict/dead-letter/stale-claim 상태를 숨겨 운영자가 연구가 잘 되고 있다고 오해함
 - Web UI가 총 queue 수와 현재 실행 중 작업 수를 구분하지 못해 병렬 실행 상태를 오해하게 만듦
 - Research worker loop가 no-yield / convergence / budget / human-review-required stop 조건 없이 Codex runtime을 계속 소비함
+- Dashboard가 영어/약어/내부 용어 중심이라 처음 보는 사용자가 graph, run 시간, dead-letter 의미를 이해하지 못함
