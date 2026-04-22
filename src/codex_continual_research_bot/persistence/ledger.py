@@ -1541,18 +1541,37 @@ class SQLitePersistenceLedger:
                     """
                     SELECT *
                     FROM worker_loops
-                    WHERE topic_id = ?
+                    WHERE topic_id = ? AND state = 'running'
+                    ORDER BY updated_at DESC, started_at DESC
+                    LIMIT 1
                     """,
                     (topic_id,),
                 ).fetchone()
                 if (
                     existing is not None
-                    and existing["state"] == "running"
                     and existing["lease_expires_at"] > current_time
                     and existing["loop_id"] != loop_id
                 ):
                     connection.execute("ROLLBACK")
                     return None
+                if existing is not None and existing["lease_expires_at"] <= current_time:
+                    connection.execute(
+                        """
+                        UPDATE worker_loops
+                        SET state = ?,
+                            stopped_at = ?,
+                            stop_reason = ?,
+                            updated_at = ?
+                        WHERE loop_id = ?
+                        """,
+                        (
+                            "stopped",
+                            current_time,
+                            "lease_expired",
+                            current_time,
+                            existing["loop_id"],
+                        ),
+                    )
 
                 connection.execute(
                     """
@@ -1576,24 +1595,6 @@ class SQLitePersistenceLedger:
                         yield_history_json,
                         updated_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, 0, 0, NULL, NULL, NULL, NULL, '[]', ?)
-                    ON CONFLICT(topic_id) DO UPDATE SET
-                        loop_id = excluded.loop_id,
-                        worker_id = excluded.worker_id,
-                        state = excluded.state,
-                        started_at = excluded.started_at,
-                        heartbeat_at = excluded.heartbeat_at,
-                        lease_expires_at = excluded.lease_expires_at,
-                        stopped_at = NULL,
-                        stop_reason = NULL,
-                        iteration_count = 0,
-                        consecutive_no_yield = 0,
-                        malformed_proposal_streak = 0,
-                        last_queue_item_id = NULL,
-                        last_run_id = NULL,
-                        last_graph_digest = NULL,
-                        last_meaningful_change = NULL,
-                        yield_history_json = '[]',
-                        updated_at = excluded.updated_at
                     """,
                     (
                         loop_id,
@@ -1607,8 +1608,8 @@ class SQLitePersistenceLedger:
                     ),
                 )
                 row = connection.execute(
-                    "SELECT * FROM worker_loops WHERE topic_id = ?",
-                    (topic_id,),
+                    "SELECT * FROM worker_loops WHERE loop_id = ?",
+                    (loop_id,),
                 ).fetchone()
                 connection.execute("COMMIT")
                 return None if row is None else dict(row)
@@ -1814,6 +1815,8 @@ class SQLitePersistenceLedger:
                 SELECT *
                 FROM worker_loops
                 WHERE topic_id = ?
+                ORDER BY updated_at DESC, started_at DESC
+                LIMIT 1
                 """,
                 (topic_id,),
             ).fetchone()

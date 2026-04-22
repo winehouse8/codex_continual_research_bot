@@ -1,6 +1,6 @@
 CREATE TABLE worker_loops (
     loop_id TEXT PRIMARY KEY,
-    topic_id TEXT NOT NULL UNIQUE REFERENCES topics(id) ON DELETE CASCADE,
+    topic_id TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
     worker_id TEXT NOT NULL,
     state TEXT NOT NULL,
     started_at TEXT NOT NULL,
@@ -21,6 +21,10 @@ CREATE TABLE worker_loops (
 
 CREATE INDEX idx_worker_loops_state_topic
 ON worker_loops(state, topic_id);
+
+CREATE UNIQUE INDEX idx_worker_loops_one_running_topic
+ON worker_loops(topic_id)
+WHERE state = 'running';
 
 CREATE TABLE worker_loop_iterations (
     loop_id TEXT NOT NULL REFERENCES worker_loops(loop_id) ON DELETE CASCADE,

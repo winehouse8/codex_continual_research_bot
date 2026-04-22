@@ -558,7 +558,10 @@ class WorkerLoopService:
     ) -> WorkerLoopRunResult:
         policy = policy or WorkerLoopPolicy()
         start = now or _utcnow()
-        loop_id = f"worker_loop_{sha256(f'{topic_id}|{self._worker_id}|{start.isoformat()}'.encode('utf-8')).hexdigest()[:16]}"
+        previous = self._ledger.fetch_worker_loop(topic_id=topic_id)
+        previous_loop_id = "" if previous is None else str(previous["loop_id"])
+        loop_seed = f"{topic_id}|{self._worker_id}|{start.isoformat()}|{previous_loop_id}"
+        loop_id = f"worker_loop_{sha256(loop_seed.encode('utf-8')).hexdigest()[:16]}"
         lease = self._ledger.acquire_worker_loop(
             loop_id=loop_id,
             topic_id=topic_id,

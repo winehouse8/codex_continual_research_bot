@@ -340,6 +340,36 @@ def test_empty_queue_with_no_active_conflicts_stops_as_converged(tmp_path: Path)
     assert result.iteration_count == 0
 
 
+def test_empty_queue_with_active_conflicts_pauses_without_claiming_convergence(
+    tmp_path: Path,
+) -> None:
+    ledger = make_ledger(tmp_path, job_count=0, conflicts=True)
+    result = WorkerLoopService(ledger).run(topic_id="topic_001", now=NOW)
+
+    assert result.stop_reason == WorkerLoopStopReason.EMPTY_QUEUE_PAUSED_ACTIVE_CONFLICTS
+    assert result.state == "blocked"
+    assert result.iteration_count == 0
+
+
+def test_worker_loop_can_restart_after_persisting_iteration_history(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path, job_count=1, conflicts=False)
+    executor = FakeLoopExecutor(ledger, ["yield"])
+    first = WorkerLoopService(ledger, executor=executor).run(
+        topic_id="topic_001",
+        policy=WorkerLoopPolicy(max_iterations=3),
+        now=NOW,
+    )
+
+    second = WorkerLoopService(ledger).run(topic_id="topic_001", now=NOW)
+
+    assert first.stop_reason == WorkerLoopStopReason.EMPTY_QUEUE_CONVERGED
+    assert first.iteration_count == 1
+    assert second.stop_reason == WorkerLoopStopReason.EMPTY_QUEUE_CONVERGED
+    assert second.state == "converged"
+    assert second.loop_id != first.loop_id
+    assert len(ledger.list_worker_loop_iterations(loop_id=str(first.loop_id))) == 1
+
+
 def test_single_active_worker_loop_lease_blocks_second_loop(tmp_path: Path) -> None:
     ledger = make_ledger(tmp_path, job_count=0)
     acquired = ledger.acquire_worker_loop(
