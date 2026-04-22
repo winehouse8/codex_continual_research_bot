@@ -970,3 +970,117 @@ Playwright test는 최소 아래를 검증한다.
 - 실행 중인 작업이 없을 경우 empty state가 명확하다.
 
 테스트 산출물은 PR/Linear handoff에서 screenshot path를 남긴다.
+
+## 25. Autonomous Research Worker Loop Architecture
+
+### 25.1 Boundary
+
+자율 연구 실행은 GitHub/Linear 구현 오케스트레이터가 아니라 CRB runtime loop다. 이 loop는 특정 topic의 CRB queue item을 소비하고, Codex 기반 research run을 실행하며, stop policy가 발동할 때까지 반복한다.
+
+제안 CLI surface:
+
+```text
+crb worker run --topic <topic_id> --loop
+crb worker status --topic <topic_id>
+crb worker stop --topic <topic_id> --reason <reason>
+```
+
+### 25.2 Proposed Modules
+
+```text
+src/codex_continual_research_bot/worker_loop.py
+src/codex_continual_research_bot/convergence.py
+src/codex_continual_research_bot/yield_analysis.py
+src/codex_continual_research_bot/worker_cli.py
+```
+
+책임:
+
+- `worker_loop.py`: 다음 queue item claim, runtime 실행, 결과 persist, loop ledger 업데이트, stop 조건까지 반복.
+- `yield_analysis.py`: 실행 전/후 graph, queue, conflict, run report 상태를 비교해 해당 iteration이 수확을 냈는지 판정.
+- `convergence.py`: no-yield streak, current best 안정성, active conflict, queue priority, dead-letter rate, budget을 평가.
+- `worker_cli.py`: `worker run/status/stop` CLI formatting과 JSON output contract 제공.
+
+### 25.3 Loop State Model
+
+개별 run과 별도로 worker-loop ledger를 저장한다.
+
+```text
+worker_loop_id
+topic_id
+status: running | paused | converged | blocked | budget_exhausted | no_yield_stop | completed
+iteration_count
+consecutive_no_yield
+max_iterations
+max_consecutive_no_yield
+started_at / updated_at / stopped_at
+last_queue_item_id
+last_run_id
+last_graph_digest
+last_meaningful_change_at
+stop_reason
+```
+
+각 iteration은 아래를 기록한다.
+
+```text
+iteration_index
+queue_item_id
+run_id
+pre_graph_digest
+post_graph_digest
+yielded: bool
+yield_reasons[]
+failure_code
+new_node_count / new_edge_count
+new_next_action_count
+created_at
+```
+
+### 25.4 Selection Policy
+
+v1 loop는 deterministic하고 audit 가능해야 한다.
+
+1. topic에서 claim 가능한 최고 priority queue item을 선택한다.
+2. human-review-required dead-letter는 명시적 policy에 따라 skip 또는 stop한다.
+3. 같은 topic에 둘 이상의 worker loop를 동시에 실행하지 않는다.
+4. support / challenge / revision requirement를 보존하는 validator-safe prompt를 우선한다.
+5. item을 선택하거나 skip한 이유를 기록한다.
+
+### 25.5 Stop Policy
+
+`ConvergencePolicy`는 매 iteration 이후 평가된다. 아래 hard stop 중 하나라도 발생하면 loop를 멈춘다.
+
+- max iterations 도달
+- max consecutive no-yield 도달
+- active conflict pressure 없이 queue가 비어 있음
+- malformed/dead-letter 비율이 threshold 초과
+- budget 초과
+- session/auth policy 실패
+- operator stop request
+
+stop decision은 audit event로 기록되고 CLI/Web에 노출된다.
+
+### 25.6 Web UI Integration
+
+Dashboard는 아래 정보를 보여줘야 한다.
+
+- topic별 active worker loop
+- 현재 loop status와 stop reason
+- iteration count와 no-yield streak
+- last meaningful graph change
+- selected queue item / run id
+- yield history sparkline 또는 compact table
+- convergence / blocked banner
+
+이 view는 queued item이 실행 중인 것처럼 보이게 하면 안 된다.
+
+### 25.7 Testing Strategy
+
+- yield classification unit tests
+- convergence stop condition unit tests
+- fake runtime integration: yielded iteration은 계속 진행하고, no-yield streak은 stop한다
+- repeated malformed proposal integration: infinite retry 전에 stop한다
+- `worker run/status/stop` CLI JSON contract tests
+- loop status Web API/view model tests
+- running loop와 no-yield/converged state를 보여주는 Playwright smoke screenshot
