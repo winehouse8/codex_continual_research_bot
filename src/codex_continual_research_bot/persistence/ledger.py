@@ -1798,15 +1798,52 @@ class SQLitePersistenceLedger:
         stop_reason: str,
         now: datetime | None = None,
     ) -> dict[str, Any] | None:
-        current = self.fetch_worker_loop(topic_id=topic_id)
-        if current is None:
-            return None
-        return self.stop_worker_loop(
-            loop_id=str(current["loop_id"]),
-            state="stopped",
-            stop_reason=stop_reason,
-            now=now,
-        )
+        current_time = _normalize_timestamp(now)
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                current = connection.execute(
+                    """
+                    SELECT loop_id
+                    FROM worker_loops
+                    WHERE topic_id = ? AND state = 'running'
+                    ORDER BY updated_at DESC, started_at DESC
+                    LIMIT 1
+                    """,
+                    (topic_id,),
+                ).fetchone()
+                if current is None:
+                    connection.execute("ROLLBACK")
+                    return None
+                cursor = connection.execute(
+                    """
+                    UPDATE worker_loops
+                    SET state = ?,
+                        stopped_at = ?,
+                        stop_reason = ?,
+                        updated_at = ?
+                    WHERE loop_id = ? AND state = 'running'
+                    """,
+                    (
+                        "stopped",
+                        current_time,
+                        stop_reason,
+                        current_time,
+                        current["loop_id"],
+                    ),
+                )
+                if cursor.rowcount == 0:
+                    connection.execute("ROLLBACK")
+                    return None
+                row = connection.execute(
+                    "SELECT * FROM worker_loops WHERE loop_id = ?",
+                    (current["loop_id"],),
+                ).fetchone()
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+        return None if row is None else dict(row)
 
     def fetch_worker_loop(self, *, topic_id: str) -> dict[str, Any] | None:
         with self.connect() as connection:

@@ -370,6 +370,40 @@ def test_worker_loop_can_restart_after_persisting_iteration_history(tmp_path: Pa
     assert len(ledger.list_worker_loop_iterations(loop_id=str(first.loop_id))) == 1
 
 
+def test_operator_stop_does_not_overwrite_completed_loop_reason(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path, job_count=0, conflicts=False)
+    service = WorkerLoopService(ledger)
+
+    result = service.run(topic_id="topic_001", now=NOW)
+    stopped = service.stop(topic_id="topic_001")
+    status = service.status(topic_id="topic_001")
+
+    assert result.stop_reason == WorkerLoopStopReason.EMPTY_QUEUE_CONVERGED
+    assert stopped["state"] == "idle"
+    assert stopped["stop_reason"] == "no_loop"
+    assert status["state"] == "converged"
+    assert status["stop_reason"] == WorkerLoopStopReason.EMPTY_QUEUE_CONVERGED.value
+
+
+def test_operator_stop_targets_only_active_running_loop(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path, job_count=0)
+    acquired = ledger.acquire_worker_loop(
+        loop_id="loop_running",
+        topic_id="topic_001",
+        worker_id="worker-a",
+        lease_expires_at=datetime(2026, 4, 22, 12, 5, tzinfo=timezone.utc),
+        now=NOW,
+    )
+    assert acquired is not None
+
+    stopped = WorkerLoopService(ledger).stop(topic_id="topic_001")
+    status = WorkerLoopService(ledger).status(topic_id="topic_001")
+
+    assert stopped["state"] == "stopped"
+    assert stopped["stop_reason"] == WorkerLoopStopReason.STOPPED_BY_OPERATOR.value
+    assert status["active"] is False
+
+
 def test_single_active_worker_loop_lease_blocks_second_loop(tmp_path: Path) -> None:
     ledger = make_ledger(tmp_path, job_count=0)
     acquired = ledger.acquire_worker_loop(

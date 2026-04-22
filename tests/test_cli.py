@@ -543,7 +543,22 @@ def test_worker_run_status_stop_json_flow(tmp_path: Path) -> None:
     stopped = parsed_json(output)
     assert code == 0
     assert stopped.command_id == "worker.stop"
-    assert stopped.data["worker_loop"]["stop_reason"] == "stopped_by_operator"
+    assert stopped.data["worker_loop"]["state"] == "idle"
+    assert stopped.data["worker_loop"]["stop_reason"] == "no_loop"
+
+    code, output, _ = run_cli(
+        [
+            "worker",
+            "status",
+            "--topic",
+            "topic_codex_auth_boundary",
+            "--json",
+        ],
+        backend,
+    )
+    status_after_stop = parsed_json(output)
+    assert code == 0
+    assert status_after_stop.data["stop_reason"] == status.data["stop_reason"]
 
 
 def test_queue_dead_letter_retry_flow_shows_failure_classification(tmp_path: Path) -> None:
