@@ -352,7 +352,7 @@ def test_web_server_routes_smoke(tmp_path: Path) -> None:
             "/api/topics/topic_codex_auth_boundary/worker-loop",
         )
 
-    assert "Research Dashboard" in html
+    assert "연구 대시보드" in html
     assert topics["schema_id"] == "crb.web.topics.v1"
     assert topic["schema_id"] == "crb.web.topic.v1"
     assert runs["schema_id"] == "crb.web.topic.runs.v1"
@@ -435,6 +435,88 @@ def test_web_dashboard_run_state_view_model_links_queue_run_and_graph(tmp_path: 
     )
 
 
+def test_web_dashboard_run_timing_view_model_handles_terminal_and_missing_times(
+    tmp_path: Path,
+) -> None:
+    backend = seed_run_state_backend(tmp_path)
+
+    with RunningServer(backend) as server:
+        dashboard = fetch_json(
+            server.base_url,
+            "/api/web/topics/topic_codex_auth_boundary/dashboard",
+        )
+
+    runs = dashboard["run_state"]["run_timeline_items"]
+    completed = next(item for item in runs if item["queue_state"] == "completed")
+    queued = next(item for item in runs if item["timeline_source"] == "queue_request")
+    dead_letter = next(item for item in runs if item["queue_state"] == "dead_letter")
+
+    assert completed["timing"]["requested_at"]
+    assert completed["timing"]["started_at"]
+    assert completed["timing"]["completed_at"]
+    assert completed["timing"]["duration_seconds"] >= 0
+    assert completed["timing"]["duration_label"] != "기록 없음"
+    assert queued["timing"]["started_at"] is None
+    assert queued["timing"]["completed_at"] is None
+    assert queued["timing"]["labels"]["started"] == "아직 시작 전"
+    assert queued["timing"]["duration_label"] == "아직 시작 전"
+    assert dead_letter["timing"]["failed_at"]
+    assert dead_letter["timing"]["labels"]["completed"] == "아직 완료 전"
+
+
+def test_web_dashboard_glossary_and_queue_help_are_korean_contracts(
+    tmp_path: Path,
+) -> None:
+    backend = seed_run_state_backend(tmp_path)
+
+    with RunningServer(backend) as server:
+        dashboard = fetch_json(
+            server.base_url,
+            "/api/web/topics/topic_codex_auth_boundary/dashboard",
+        )
+
+    glossary_terms = {entry["term"].lower() for entry in dashboard["glossary"]["entries"]}
+    assert {
+        "top",
+        "hyp",
+        "cla",
+        "evi",
+        "pro",
+        "con",
+        "supports",
+        "challenges",
+        "visualizes",
+        "dead-letter",
+    } <= glossary_terms
+    assert all(entry["korean_label"] for entry in dashboard["glossary"]["entries"])
+    queue_help_text = json.dumps(
+        dashboard["queue_state_help"],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    assert "retryable=true" in queue_help_text
+    assert "human-review-required=true" in queue_help_text
+    assert "Dead-letter" in queue_help_text
+    assert "격리된 실패" in queue_help_text
+
+
+def test_dashboard_primary_copy_is_korean_by_default(tmp_path: Path) -> None:
+    backend = seed_backend(tmp_path)
+
+    with RunningServer(backend) as server:
+        html = fetch_text(server.base_url, "/dashboard")
+        js = fetch_text(server.base_url, "/app.js")
+
+    assert '<html lang="ko">' in html
+    assert "연구 대시보드" in html
+    assert "대시보드 읽는 법" in html
+    assert "새로고침" in html
+    assert "현재 최선 가설" in html
+    assert "Queue 상태" in html
+    assert "아직 시작 전" in js
+    assert "failure detail 확인 후 repair/retry 여부 결정" in js
+
+
 def test_web_server_default_bind_is_loopback(tmp_path: Path) -> None:
     backend = seed_backend(tmp_path)
     server = create_web_server(backend=backend, port=0)
@@ -502,9 +584,15 @@ def test_html_shell_smoke(tmp_path: Path) -> None:
     assert 'id="workerLoopState"' in html
     assert 'id="deadLetterCount"' in html
     assert 'id="staleCount"' in html
+    assert 'id="helpPanel"' in html
+    assert 'id="graphLegend"' in html
+    assert 'id="queueHelpList"' in html
     assert ".graph-canvas" in css
     assert ".summary-band" in css
     assert ".current-work" in css
+    assert ".help-panel" in css
+    assert ".legend-grid" in css
     assert "/graph/" in js
     assert "/dashboard" in js
+    assert "renderDashboardHelp" in js
     assert "CRBGraphRenderer" in renderer

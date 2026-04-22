@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import posixpath
+from datetime import datetime, timezone
 from functools import partial
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,8 +24,198 @@ from codex_continual_research_bot.web_graph_explorer import build_graph_explorer
 DEFAULT_WEB_HOST = "127.0.0.1"
 DEFAULT_WEB_PORT = 8765
 READ_ONLY_NOTICE = (
-    "Local web dashboard is read-only; backend state, graph, queue, and "
-    "provenance ledgers remain authoritative."
+    "이 dashboard는 read-only projection이며 not a source of truth입니다. "
+    "Source of truth는 backend state, canonical graph, queue, provenance ledger입니다."
+)
+
+DASHBOARD_GLOSSARY: tuple[dict[str, str], ...] = (
+    {
+        "term": "TOP",
+        "short_label": "TOP",
+        "korean_label": "토픽",
+        "plain_explanation": "연구가 다루는 주제 단위입니다.",
+        "why_it_matters": "모든 run, queue item, graph projection이 특정 topic 아래에 묶입니다.",
+        "example": "topic_codex_auth_boundary",
+    },
+    {
+        "term": "HYP",
+        "short_label": "HYP",
+        "korean_label": "가설",
+        "plain_explanation": "현재 최선 설명이나 그 설명에 도전하는 후보입니다.",
+        "why_it_matters": "CRB는 fact를 쌓는 대신 hypothesis를 경쟁시키며 수정합니다.",
+        "example": "Current best 또는 challenger hypothesis",
+    },
+    {
+        "term": "CLA",
+        "short_label": "CLA",
+        "korean_label": "주장",
+        "plain_explanation": "가설을 구성하거나 검증하는 개별 claim입니다.",
+        "why_it_matters": "claim은 evidence와 연결되어 hypothesis를 지지하거나 흔듭니다.",
+        "example": "stale session은 identity drift 신호일 수 있음",
+    },
+    {
+        "term": "EVI",
+        "short_label": "EVI",
+        "korean_label": "근거",
+        "plain_explanation": "claim이나 hypothesis를 판단하는 데 쓰인 evidence입니다.",
+        "why_it_matters": "근거 없는 결론은 current best로 유지되지 않아야 합니다.",
+        "example": "session inspection result",
+    },
+    {
+        "term": "PRO",
+        "short_label": "PRO",
+        "korean_label": "출처 기록",
+        "plain_explanation": "어떤 run/proposal이 이 graph node를 만들었는지 남기는 provenance입니다.",
+        "why_it_matters": "나중에 결론이 바뀌어도 어떤 실행에서 비롯됐는지 추적할 수 있습니다.",
+        "example": "provenance:proposal_running",
+    },
+    {
+        "term": "CON",
+        "short_label": "CON",
+        "korean_label": "충돌",
+        "plain_explanation": "서로 긴장하거나 동시에 참이라고 보기 어려운 설명입니다.",
+        "why_it_matters": "unresolved conflict는 다음 run이 다시 다뤄야 하는 frontier입니다.",
+        "example": "stale claim이 recoverable age인지 identity drift인지 불명확함",
+    },
+    {
+        "term": "supports",
+        "short_label": "supports",
+        "korean_label": "지지",
+        "plain_explanation": "한 node가 다른 claim/hypothesis를 강화하는 edge입니다.",
+        "why_it_matters": "가설이 왜 유지되는지 확인하는 연결입니다.",
+        "example": "evidence supports current best",
+    },
+    {
+        "term": "challenges",
+        "short_label": "challenges",
+        "korean_label": "도전",
+        "plain_explanation": "한 node가 기존 설명을 공격하거나 대안을 제시하는 edge입니다.",
+        "why_it_matters": "반복 연구가 더 좋아지려면 challenge pressure가 보여야 합니다.",
+        "example": "challenger challenges current best",
+    },
+    {
+        "term": "visualizes",
+        "short_label": "visualizes",
+        "korean_label": "시각화",
+        "plain_explanation": "backend state를 사람이 읽기 쉬운 projection으로 보여주는 edge입니다.",
+        "why_it_matters": "시각화는 검토 화면일 뿐 source of truth가 아닙니다.",
+        "example": "graph export visualizes canonical graph write",
+    },
+    {
+        "term": "dead-letter",
+        "short_label": "Dead-letter",
+        "korean_label": "사람 확인이 필요한 실패",
+        "plain_explanation": "자동 처리로 계속 진행하면 위험해서 격리된 queue item입니다.",
+        "why_it_matters": "failure code, retry 가능 여부, human review 필요 여부를 보고 다음 행동을 정해야 합니다.",
+        "example": "malformed_proposal",
+    },
+    {
+        "term": "Queue",
+        "short_label": "Queue",
+        "korean_label": "작업 대기열",
+        "plain_explanation": "worker가 처리할 research run 또는 repair 작업 목록입니다.",
+        "why_it_matters": "총 queue 수와 현재 실행 중 worker 수를 구분해야 합니다.",
+        "example": "queued, claimed, completed, dead_letter",
+    },
+    {
+        "term": "Worker loop",
+        "short_label": "Worker loop",
+        "korean_label": "자동 실행 루프",
+        "plain_explanation": "queue item을 claim하고 Codex runtime을 실행하는 backend loop입니다.",
+        "why_it_matters": "멈춤 사유와 no-yield streak를 보면 자동 연구가 계속 진행 가능한지 판단할 수 있습니다.",
+        "example": "max_consecutive_no_yield",
+    },
+)
+
+DASHBOARD_HELP_SECTIONS: tuple[dict[str, object], ...] = (
+    {
+        "view_id": "overview",
+        "title": "개요를 읽는 법",
+        "summary": "현재 실행 상태, 대기열 수, current best hypothesis, active conflict를 먼저 확인합니다.",
+        "checkpoints": [
+            "Running은 실제 worker가 claim한 작업 수이고 Queue total은 전체 작업 수입니다.",
+            "Dead-letter 또는 Stale이 0이 아니면 자동 진행이 막혔는지 확인합니다.",
+            "Current best와 Active conflict가 함께 보이는지 확인합니다.",
+        ],
+    },
+    {
+        "view_id": "graph",
+        "title": "그래프를 읽는 법",
+        "summary": "badge 약어와 edge 의미를 보고 hypothesis가 어떤 근거로 지지되거나 도전받는지 봅니다.",
+        "checkpoints": [
+            "HYP는 가설, EVI는 근거, PRO는 출처 기록, CON은 unresolved conflict입니다.",
+            "supports는 지지, challenges는 도전 관계입니다.",
+            "Latest는 최신 graph write, History는 누적 projection입니다.",
+        ],
+    },
+    {
+        "view_id": "runs",
+        "title": "실행 시간을 읽는 법",
+        "summary": "요청, claim, 시작, 완료/실패 시각과 duration을 같이 봅니다.",
+        "checkpoints": [
+            "요청만 있고 시작이 없으면 worker가 아직 claim하지 않은 상태입니다.",
+            "완료 시각이 없고 status가 진행 중이면 아직 완료 전입니다.",
+            "duration은 terminal timestamp가 있을 때 시작/요청 시각과 비교해 계산합니다.",
+        ],
+    },
+    {
+        "view_id": "queue",
+        "title": "Queue 상태를 읽는 법",
+        "summary": "Queued, Running/Claimed, Completed, Dead-letter, Stale을 나눠 다음 행동을 정합니다.",
+        "checkpoints": [
+            "Dead-letter는 실패를 숨기지 않고 operator 판단을 요구합니다.",
+            "retryable=false이면 같은 입력을 자동 재시도하기보다 원인을 먼저 봅니다.",
+            "human_review_required=true이면 사람이 proposal 또는 failure detail을 확인해야 합니다.",
+        ],
+    },
+    {
+        "view_id": "memory",
+        "title": "Memory projection을 읽는 법",
+        "summary": "backend-owned hypothesis graph의 요약 projection으로 현재 믿음 상태를 확인합니다.",
+        "checkpoints": [
+            "Graph digest는 projection이 바라본 canonical graph write를 식별합니다.",
+            "Challenger가 없으면 다음 run에서 공격 가설을 더 만들어야 할 수 있습니다.",
+            "Conflict가 계속 남으면 후속 run frontier로 되돌려야 합니다.",
+        ],
+    },
+)
+
+QUEUE_STATE_HELP: tuple[dict[str, str], ...] = (
+    {
+        "state": "queued",
+        "label": "Queued",
+        "korean_label": "대기",
+        "plain_explanation": "아직 worker가 claim하지 않은 작업입니다.",
+        "next_action": "worker loop가 실행 중인지 확인하거나 우선순위를 조정합니다.",
+    },
+    {
+        "state": "running",
+        "label": "Running/Claimed",
+        "korean_label": "실행 중",
+        "plain_explanation": "worker가 claim했고 run 실행 또는 처리를 진행 중인 작업입니다.",
+        "next_action": "claimed_at과 latest event를 보고 정상 진행인지 확인합니다.",
+    },
+    {
+        "state": "completed",
+        "label": "Completed",
+        "korean_label": "완료",
+        "plain_explanation": "queue item 처리가 끝났고 backend state update가 반영된 상태입니다.",
+        "next_action": "graph digest와 memory projection 변화가 기대와 맞는지 확인합니다.",
+    },
+    {
+        "state": "dead_letter",
+        "label": "Dead-letter",
+        "korean_label": "격리된 실패",
+        "plain_explanation": "자동 재처리하면 위험하거나 반복 실패할 수 있어 멈춘 작업입니다.",
+        "next_action": "failure code, retryable, human-review-required를 보고 repair/retry/설계 보완을 결정합니다.",
+    },
+    {
+        "state": "stale",
+        "label": "Stale",
+        "korean_label": "오래된 claim",
+        "plain_explanation": "worker가 claim한 뒤 heartbeat/진행이 오래 확인되지 않은 작업입니다.",
+        "next_action": "실행이 살아 있는지 확인한 뒤 stale recovery 또는 dead-letter 처리를 선택합니다.",
+    },
 )
 
 
@@ -146,6 +337,26 @@ class ReadOnlyWebApi:
             "memory": memory,
             "graph": graph,
             "worker_loop": worker_loop,
+            "dashboard_help": {
+                "schema_id": "crb.web.dashboard_help.ko.v1",
+                "sections": list(DASHBOARD_HELP_SECTIONS),
+            },
+            "glossary": {
+                "schema_id": "crb.web.dashboard_glossary.ko.v1",
+                "entries": list(DASHBOARD_GLOSSARY),
+            },
+            "graph_legend": self._graph_legend_view(),
+            "queue_state_help": {
+                "schema_id": "crb.web.queue_state_help.ko.v1",
+                "states": list(QUEUE_STATE_HELP),
+                "retryable_guidance": (
+                    "retryable=true이면 원인 수정 뒤 재시도 후보입니다. "
+                    "retryable=false이면 같은 입력을 자동 반복하지 말고 failure detail을 먼저 검토합니다."
+                ),
+                "human_review_required_guidance": (
+                    "human-review-required=true이면 operator가 proposal, evidence, failure code를 확인해야 합니다."
+                ),
+            },
             "run_state": self._run_state_view(
                 topic_id=topic_id,
                 timeline_items=runs["timeline_items"],
@@ -177,6 +388,12 @@ class ReadOnlyWebApi:
                 "failure": queue_by_id.get(str(run.get("queue_item_id")), {}).get(
                     "failure", {}
                 ),
+                "queue_created_at": queue_by_id.get(str(run.get("queue_item_id")), {}).get(
+                    "created_at"
+                ),
+                "available_at": queue_by_id.get(str(run.get("queue_item_id")), {}).get(
+                    "available_at"
+                ),
             }
             for run in runs
         ]
@@ -202,6 +419,8 @@ class ReadOnlyWebApi:
                     "objective": item["objective"],
                     "claim": item["claim"],
                     "failure": item["failure"],
+                    "queue_created_at": item.get("created_at"),
+                    "available_at": item.get("available_at"),
                 }
             )
         return ledger_items + queued_items
@@ -282,17 +501,132 @@ class ReadOnlyWebApi:
                     ("stale", "Stale claim"),
                 ]
             ],
-            "run_timeline_items": [
-                {
-                    **item,
-                    "latest_event": self._latest_event_for_run(
-                        run_id=item.get("run_id"),
-                        fallback_status=str(item.get("status") or item.get("queue_state")),
-                    ),
-                    "graph_context": self._graph_context_for_item(item, graph=graph),
-                }
-                for item in timeline_items
+            "run_timeline_items": self._run_timeline_view(timeline_items, graph=graph),
+        }
+
+    def _run_timeline_view(
+        self,
+        timeline_items: list[dict[str, Any]],
+        *,
+        graph: dict[str, Any],
+    ) -> list[dict[str, object]]:
+        view = []
+        for item in timeline_items:
+            latest_event = self._latest_event_for_run(
+                run_id=item.get("run_id"),
+                fallback_status=str(item.get("status") or item.get("queue_state")),
+            )
+            enriched = {
+                **item,
+                "latest_event": latest_event,
+                "graph_context": self._graph_context_for_item(item, graph=graph),
+            }
+            enriched["timing"] = self._run_timing_view(enriched)
+            view.append(enriched)
+        return view
+
+    def _run_timing_view(self, item: dict[str, Any]) -> dict[str, object]:
+        status = str(item.get("status") or item.get("queue_state") or "")
+        queue_state = str(item.get("queue_state") or "")
+        failure = item.get("failure", {})
+        requested_at = _first_timestamp(
+            item.get("queue_created_at"),
+            item.get("available_at"),
+            item.get("created_at"),
+        )
+        claimed_at = _first_timestamp(item.get("claim", {}).get("claimed_at"))
+        started_at = (
+            _first_timestamp(item.get("created_at"))
+            if item.get("timeline_source") == "run_ledger"
+            else None
+        )
+        latest_event_at = _first_timestamp(item.get("latest_event", {}).get("timestamp"))
+        completed_at = (
+            _first_timestamp(item.get("updated_at"))
+            if status == "completed" or queue_state == "completed"
+            else None
+        )
+        failed_at = (
+            _first_timestamp(item.get("updated_at"))
+            if status in {"failed", "dead_letter"}
+            or queue_state == "dead_letter"
+            or bool(failure.get("failure_code"))
+            else None
+        )
+        stopped_at = (
+            _first_timestamp(item.get("updated_at"))
+            if status in {"stopped", "cancelled", "canceled"}
+            else None
+        )
+        anchor_start = started_at or claimed_at or requested_at
+        anchor_end = completed_at or failed_at or stopped_at
+        duration_seconds = _duration_seconds(anchor_start, anchor_end)
+        terminal = bool(anchor_end)
+        if duration_seconds is not None:
+            duration_label = _duration_label(duration_seconds)
+        elif not anchor_start:
+            duration_label = "기록 없음"
+        elif terminal:
+            duration_label = "계산 불가"
+        elif started_at or claimed_at:
+            duration_label = "아직 완료 전"
+        else:
+            duration_label = "아직 시작 전"
+        return {
+            "schema_id": "crb.web.run_timing.ko.v1",
+            "requested_at": requested_at,
+            "claimed_at": claimed_at,
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "failed_at": failed_at,
+            "stopped_at": stopped_at,
+            "latest_event_at": latest_event_at,
+            "duration_seconds": duration_seconds,
+            "duration_label": duration_label,
+            "labels": {
+                "requested": _timestamp_state_label(requested_at, "요청 시각 기록 없음"),
+                "claimed": _timestamp_state_label(claimed_at, "아직 worker claim 전"),
+                "started": _timestamp_state_label(started_at, "아직 시작 전"),
+                "completed": _terminal_label(
+                    value=completed_at,
+                    status=status,
+                    terminal_status="completed",
+                    pending="아직 완료 전",
+                    missing="완료 시각 기록 없음",
+                ),
+                "failed": _terminal_label(
+                    value=failed_at,
+                    status=status if status else queue_state,
+                    terminal_status="dead_letter",
+                    pending="실패 기록 없음",
+                    missing="실패 시각 기록 없음",
+                ),
+                "stopped": _timestamp_state_label(stopped_at, "중단 기록 없음"),
+                "latest_event": _timestamp_state_label(latest_event_at, "event 기록 없음"),
+            },
+            "raw_timestamps": {
+                "run_created_at": item.get("created_at"),
+                "run_updated_at": item.get("updated_at"),
+                "queue_created_at": item.get("queue_created_at"),
+                "available_at": item.get("available_at"),
+                "claimed_at": item.get("claim", {}).get("claimed_at"),
+                "latest_event_at": item.get("latest_event", {}).get("timestamp"),
+            },
+        }
+
+    def _graph_legend_view(self) -> dict[str, object]:
+        entries = {entry["term"]: entry for entry in DASHBOARD_GLOSSARY}
+        return {
+            "schema_id": "crb.web.graph_legend.ko.v1",
+            "node_badges": [
+                entries[term]
+                for term in ("TOP", "HYP", "CLA", "EVI", "PRO", "CON")
             ],
+            "edge_types": [
+                entries[term]
+                for term in ("supports", "challenges", "visualizes")
+            ],
+            "projection_notice": READ_ONLY_NOTICE,
         }
 
     def _current_queue_item(self, items: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -483,6 +817,62 @@ class ReadOnlyWebApi:
             "relation_counts": relation_counts,
             "summary": summary,
         }
+
+
+def _first_timestamp(*values: object) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _duration_seconds(start: str | None, end: str | None) -> int | None:
+    started = _parse_timestamp(start)
+    ended = _parse_timestamp(end)
+    if started is None or ended is None:
+        return None
+    return max(0, int((ended - started).total_seconds()))
+
+
+def _duration_label(seconds: int) -> str:
+    minutes, remaining_seconds = divmod(seconds, 60)
+    hours, remaining_minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}시간 {remaining_minutes}분"
+    if remaining_minutes:
+        return f"{remaining_minutes}분 {remaining_seconds}초"
+    return f"{remaining_seconds}초"
+
+
+def _timestamp_state_label(value: str | None, fallback: str) -> str:
+    return value if value else fallback
+
+
+def _terminal_label(
+    *,
+    value: str | None,
+    status: str,
+    terminal_status: str,
+    pending: str,
+    missing: str,
+) -> str:
+    if value:
+        return value
+    if status == terminal_status:
+        return missing
+    return pending
 
 
 class LocalWebRequestHandler(BaseHTTPRequestHandler):

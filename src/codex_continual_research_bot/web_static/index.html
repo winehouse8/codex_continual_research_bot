@@ -1,47 +1,47 @@
 <!doctype html>
-<html lang="en">
+<html lang="ko">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>CRB Dashboard</title>
+    <title>CRB 연구 대시보드</title>
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
     <header class="topbar">
       <div>
         <p class="eyebrow">Continual Research Bot</p>
-        <h1>Research Dashboard</h1>
+        <h1>연구 대시보드</h1>
       </div>
       <div class="toolbar" aria-label="Dashboard controls">
         <select id="topicSelect" aria-label="Topic"></select>
-        <button id="refreshButton" type="button">Refresh</button>
+        <button id="helpOpenButton" type="button">대시보드 읽는 법</button>
+        <button id="refreshButton" type="button">새로고침</button>
       </div>
     </header>
 
     <main>
       <section class="notice" id="authorityNotice">
-        Dashboard projections are not a source of truth; backend state, graph,
-        queue, and provenance ledgers remain authoritative.
+        이 dashboard는 backend state를 읽기 쉽게 보여주는 projection이며 source of truth가 아닙니다.
       </section>
 
       <section class="summary-band" aria-labelledby="topicTitle">
         <div>
           <p class="label">Topic</p>
-          <h2 id="topicTitle">No topic loaded</h2>
-          <p id="topicSummary" class="lede">Initialize a local CRB database to inspect state.</p>
+          <h2 id="topicTitle">토픽 없음</h2>
+          <p id="topicSummary" class="lede">로컬 CRB database를 초기화하면 상태를 볼 수 있습니다.</p>
         </div>
         <div class="metric-strip run-state-metrics" aria-label="Run-state metrics">
           <div>
             <span id="runningCount">0</span>
-            <p>Running</p>
+            <p>실행 중</p>
           </div>
           <div>
             <span id="queuedCount">0</span>
-            <p>Queued</p>
+            <p>대기</p>
           </div>
           <div>
             <span id="completedCount">0</span>
-            <p>Completed</p>
+            <p>완료</p>
           </div>
           <div>
             <span id="deadLetterCount">0</span>
@@ -55,51 +55,54 @@
       </section>
 
       <nav class="tabs" aria-label="Dashboard views">
-        <button class="tab active" type="button" data-view="overview">Overview</button>
-        <button class="tab" type="button" data-view="graph">Graph</button>
-        <button class="tab" type="button" data-view="runs">Runs</button>
-        <button class="tab" type="button" data-view="queue">Queue</button>
-        <button class="tab" type="button" data-view="memory">Memory</button>
+        <button class="tab active" type="button" data-view="overview">개요</button>
+        <button class="tab" type="button" data-view="graph">그래프</button>
+        <button class="tab" type="button" data-view="runs">실행</button>
+        <button class="tab" type="button" data-view="queue">큐</button>
+        <button class="tab" type="button" data-view="memory">메모리</button>
       </nav>
 
       <section id="overview" class="view active" aria-label="Overview">
+        <div id="overviewHelp" class="tab-help"></div>
         <article id="runningNowCard" class="current-work status-idle" aria-label="Current execution state">
           <div>
-            <p class="label">Execution</p>
-            <h3 id="runningNowTitle">No active work</h3>
-            <p id="runningNowObjective" class="lede">No queue item selected.</p>
+            <p class="label">실행 상태</p>
+            <h3 id="runningNowTitle">활성 작업 없음</h3>
+            <p id="runningNowObjective" class="lede">선택된 queue item이 없습니다.</p>
           </div>
           <dl>
             <dt>Run</dt>
-            <dd id="runningNowRun">None</dd>
+            <dd id="runningNowRun">없음</dd>
             <dt>Queue</dt>
-            <dd id="runningNowQueue">None</dd>
-            <dt>Latest event</dt>
-            <dd id="runningNowEvent">None</dd>
-            <dt>Graph relation</dt>
-            <dd id="runningNowGraph">None</dd>
+            <dd id="runningNowQueue">없음</dd>
+            <dt>최신 event</dt>
+            <dd id="runningNowEvent">없음</dd>
+            <dt>Graph 관계</dt>
+            <dd id="runningNowGraph">없음</dd>
             <dt>Worker loop</dt>
             <dd id="workerLoopState">idle</dd>
           </dl>
         </article>
 
         <div class="section-heading">
-          <h3>Current Best</h3>
+          <h3>현재 최선 가설</h3>
           <span id="snapshotVersion" class="pill">v0</span>
         </div>
         <div id="hypotheses" class="card-grid"></div>
         <div class="section-heading">
-          <h3>Active Conflicts</h3>
+          <h3>활성 충돌</h3>
           <span id="conflictCount" class="pill">0</span>
         </div>
         <div id="conflicts" class="card-grid"></div>
       </section>
 
       <section id="graph" class="view" aria-label="Graph explorer">
+        <div id="graphHelp" class="tab-help"></div>
         <div class="section-heading">
           <h3>Graph Explorer</h3>
           <span id="graphScopeLabel" class="pill">latest</span>
         </div>
+        <div id="graphLegend" class="legend-grid" aria-label="Graph legend"></div>
         <div class="graph-toolbar" aria-label="Graph controls">
           <div class="segmented" aria-label="Graph scope">
             <button id="latestGraphButton" class="active" type="button" data-scope="latest">Latest</button>
@@ -113,8 +116,8 @@
         <div class="graph-layout">
           <div id="graphCanvas" class="graph-canvas" role="img" aria-label="Research graph projection"></div>
           <aside class="detail-panel" aria-labelledby="detailTitle">
-            <p class="label">Selected node</p>
-            <h4 id="detailTitle">None</h4>
+            <p class="label">선택한 node</p>
+            <h4 id="detailTitle">없음</h4>
             <p id="detailSummary"></p>
             <dl id="detailMeta"></dl>
             <div id="detailRelations" class="relation-list"></div>
@@ -124,6 +127,7 @@
       </section>
 
       <section id="runs" class="view" aria-label="Runs">
+        <div id="runsHelp" class="tab-help"></div>
         <div class="section-heading">
           <h3>Run Timeline</h3>
           <span id="runCount" class="pill">0</span>
@@ -132,14 +136,17 @@
       </section>
 
       <section id="queue" class="view" aria-label="Queue">
+        <div id="queueHelp" class="tab-help"></div>
         <div class="section-heading">
-          <h3>Queue State</h3>
+          <h3>Queue 상태</h3>
           <span id="queueCount" class="pill">0</span>
         </div>
+        <div id="queueHelpList" class="legend-grid" aria-label="Queue state help"></div>
         <div id="queueList" class="table-list"></div>
       </section>
 
       <section id="memory" class="view" aria-label="Memory">
+        <div id="memoryHelp" class="tab-help"></div>
         <div class="section-heading">
           <h3>Memory Projection</h3>
           <span id="graphDigest" class="pill">none</span>
@@ -147,6 +154,17 @@
         <div id="memoryList" class="card-grid"></div>
       </section>
     </main>
+
+    <aside id="helpPanel" class="help-panel" aria-label="대시보드 읽는 법" aria-hidden="true">
+      <div class="help-panel__backdrop" data-help-close></div>
+      <section class="help-panel__body" role="dialog" aria-modal="true" aria-labelledby="helpPanelTitle">
+        <div class="section-heading">
+          <h2 id="helpPanelTitle">대시보드 읽는 법</h2>
+          <button id="helpCloseButton" type="button">닫기</button>
+        </div>
+        <div id="helpPanelContent" class="help-panel__content"></div>
+      </section>
+    </aside>
 
     <script src="/graph-renderer.js"></script>
     <script src="/app.js"></script>

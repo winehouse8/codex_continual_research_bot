@@ -49,7 +49,7 @@
       "text-anchor": "middle",
       "class": "graph-label",
     });
-    const text = node.label.length > 26 ? `${node.label.slice(0, 23)}...` : node.label;
+    const text = node.label.length > 12 ? `${node.label.slice(0, 9)}...` : node.label;
     label.textContent = text;
     parent.appendChild(label);
   }
@@ -60,7 +60,7 @@
     if (!visibleNodes.length) {
       const empty = document.createElement("p");
       empty.className = "empty";
-      empty.textContent = "No graph nodes match the active filters.";
+      empty.textContent = "현재 필터와 일치하는 graph node가 없습니다.";
       target.appendChild(empty);
       return;
     }
@@ -121,6 +121,9 @@
       });
       type.textContent = node.node_type.slice(0, 3).toUpperCase();
       group.appendChild(type);
+      const fullLabel = svgEl("title");
+      fullLabel.textContent = node.label;
+      group.appendChild(fullLabel);
       appendLabel(group, node, position);
       group.addEventListener("click", () => options.onSelect?.(node.node_id));
       group.addEventListener("keydown", (event) => {

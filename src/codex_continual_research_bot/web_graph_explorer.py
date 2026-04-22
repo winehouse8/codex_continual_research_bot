@@ -13,11 +13,11 @@ from codex_continual_research_bot.ux_contracts import (
 
 GRAPH_EXPLORER_SCHEMA_ID = "crb.web.graph_explorer.runtime.v1"
 FILTER_LABELS = {
-    "current_best": "Current best",
-    "challenger": "Challengers",
-    "evidence": "Evidence",
-    "conflict": "Conflicts",
-    "provenance": "Provenance",
+    "current_best": "최선 가설",
+    "challenger": "도전자",
+    "evidence": "근거",
+    "conflict": "충돌",
+    "provenance": "출처 기록",
 }
 FILTER_ORDER = tuple(FILTER_LABELS)
 FILTERED_GROUPS = set(FILTER_ORDER)
