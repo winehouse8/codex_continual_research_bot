@@ -14,6 +14,8 @@ def classify_malformed_proposal_failure(detail: str | None) -> str:
         return "malformed_proposal_other"
     if "supersede action requires supersedes_hypothesis_id" in normalized:
         return "supersede_missing_predecessor"
+    if "supersede proposal must target the attack frontier" in normalized:
+        return "supersede_contract_mismatch"
     if "supersedes_hypothesis_id" in normalized or "stale predecessor" in normalized:
         return "supersede_invalid_predecessor"
     if "temporal scope" in normalized or "temporal_scope" in normalized:

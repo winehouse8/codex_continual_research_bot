@@ -158,12 +158,13 @@ class FakeLoopExecutor:
         )
         self.sequence += 1
         if outcome == "malformed":
+            detail = "proposal omitted challenger_hypotheses"
             self.ledger.record_queue_dead_letter(
                 queue_item_id=queue_item_id,
                 run_id=run_id,
                 worker_id=worker_id,
                 failure_code=FailureCode.MALFORMED_PROPOSAL.value,
-                detail="proposal omitted challenger_hypotheses",
+                detail=detail,
                 retryable=False,
                 human_review_required=True,
             )
@@ -172,6 +173,29 @@ class FakeLoopExecutor:
                 run_id=run_id,
                 queue_state=QueueJobState.DEAD_LETTER,
                 failure_code=FailureCode.MALFORMED_PROPOSAL,
+                failure_detail=detail,
+            )
+        if outcome == "contract_mismatch":
+            detail = (
+                "supersede proposal must target the attack frontier through "
+                "hypothesis_id or supersedes_hypothesis_id; expected one of hyp_001; "
+                "got hypothesis_id=hyp_002, supersedes_hypothesis_id=hyp_003"
+            )
+            self.ledger.record_queue_dead_letter(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                worker_id=worker_id,
+                failure_code=FailureCode.MALFORMED_PROPOSAL.value,
+                detail=detail,
+                retryable=False,
+                human_review_required=True,
+            )
+            return LoopExecutionResult(
+                queue_item_id=queue_item_id,
+                run_id=run_id,
+                queue_state=QueueJobState.DEAD_LETTER,
+                failure_code=FailureCode.MALFORMED_PROPOSAL,
+                failure_detail=detail,
             )
 
         digest = (
@@ -406,6 +430,26 @@ def test_repeated_malformed_proposal_stops_without_infinite_retry(tmp_path: Path
     assert result.stop_reason == WorkerLoopStopReason.REPEATED_MALFORMED_PROPOSAL
     assert result.state == "blocked"
     assert result.iteration_count == 2
+
+
+def test_contract_mismatch_malformed_proposal_stops_before_repeated_dead_letters(
+    tmp_path: Path,
+) -> None:
+    ledger = make_ledger(tmp_path, job_count=3)
+    executor = FakeLoopExecutor(ledger, ["contract_mismatch", "yield", "yield"])
+    result = WorkerLoopService(ledger, executor=executor).run(
+        topic_id="topic_001",
+        policy=WorkerLoopPolicy(max_iterations=5, max_malformed_proposals=3),
+        now=NOW,
+    )
+
+    assert result.stop_reason == WorkerLoopStopReason.BLOCKED_CONTRACT_MISMATCH
+    assert result.state == "blocked"
+    assert result.iteration_count == 1
+    assert result.malformed_proposal_streak == 1
+    assert "supersede proposal must target the attack frontier" in (
+        result.last_error or ""
+    )
 
 
 def test_empty_queue_with_no_active_conflicts_stops_as_converged(tmp_path: Path) -> None:
