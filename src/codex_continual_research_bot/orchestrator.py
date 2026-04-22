@@ -62,6 +62,50 @@ class CompetitionValidationError(RunOrchestratorError):
     """Raised when a proposal does not satisfy the minimum competition loop."""
 
 
+def _revision_targets_attack_frontier(
+    *,
+    action: RevisionAction,
+    hypothesis_id: str,
+    supersedes_hypothesis_id: str | None,
+    attack_target_ids: set[str],
+) -> bool:
+    if action in {RevisionAction.WEAKEN, RevisionAction.RETIRE}:
+        return hypothesis_id in attack_target_ids
+    if action == RevisionAction.SUPERSEDE:
+        return (
+            hypothesis_id in attack_target_ids
+            or supersedes_hypothesis_id in attack_target_ids
+        )
+    return False
+
+
+def _revision_pressure_failure_detail(
+    *,
+    proposal: ProposalBundle,
+    attack_target_ids: set[str],
+) -> str:
+    supersede_revisions = [
+        revision
+        for revision in proposal.revision_proposals
+        if revision.action == RevisionAction.SUPERSEDE
+    ]
+    if supersede_revisions:
+        attack_targets = ", ".join(sorted(attack_target_ids))
+        attempted_targets = "; ".join(
+            (
+                f"hypothesis_id={revision.hypothesis_id}, "
+                f"supersedes_hypothesis_id={revision.supersedes_hypothesis_id}"
+            )
+            for revision in supersede_revisions
+        )
+        return (
+            "supersede proposal must target the attack frontier through "
+            "hypothesis_id or supersedes_hypothesis_id; expected one of "
+            f"{attack_targets}; got {attempted_targets}"
+        )
+    return "proposal must reconcile, escalate, weaken, retire, or supersede a hypothesis"
+
+
 STATE_TRANSITIONS: Final[dict[RunLifecycleState, frozenset[RunLifecycleState]]] = {
     RunLifecycleState.QUEUED: frozenset({RunLifecycleState.LOADING_STATE}),
     RunLifecycleState.LOADING_STATE: frozenset(
@@ -543,13 +587,12 @@ class RunOrchestrator:
             for assessment in proposal.conflict_assessments
         )
         has_retirement_or_revision_pressure = any(
-            revision.action
-            in {
-                RevisionAction.WEAKEN,
-                RevisionAction.RETIRE,
-                RevisionAction.SUPERSEDE,
-            }
-            and revision.hypothesis_id in attack_target_ids
+            _revision_targets_attack_frontier(
+                action=revision.action,
+                hypothesis_id=revision.hypothesis_id,
+                supersedes_hypothesis_id=revision.supersedes_hypothesis_id,
+                attack_target_ids=attack_target_ids,
+            )
             for revision in proposal.revision_proposals
         )
         if (
@@ -558,7 +601,10 @@ class RunOrchestrator:
             and not has_retirement_or_revision_pressure
         ):
             raise CompetitionValidationError(
-                "proposal must reconcile, escalate, weaken, retire, or supersede a hypothesis"
+                _revision_pressure_failure_detail(
+                    proposal=proposal,
+                    attack_target_ids=attack_target_ids,
+                )
             )
 
     def accept_competition_proposal(

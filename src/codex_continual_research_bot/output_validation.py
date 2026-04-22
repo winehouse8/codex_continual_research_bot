@@ -77,10 +77,12 @@ Validator-safe ProposalBundle rules:
   argument target_hypothesis_id must be either a current best hypothesis from
   the snapshot or a challenger_hypotheses[].hypothesis_id in this proposal.
 - revision_proposals[].hypothesis_id must target a current best hypothesis or a
-  proposal challenger.
+  proposal challenger. For supersede actions, hypothesis_id may be the new
+  challenger that replaces an existing hypothesis.
 - If revision_proposals[].action is "supersede", include
   supersedes_hypothesis_id and point it at the existing hypothesis being
-  replaced. For non-supersede actions, leave supersedes_hypothesis_id null.
+  replaced; this should normally be the current best or challenger target under
+  attack. For non-supersede actions, leave supersedes_hypothesis_id null.
 - next_actions must preserve these same temporal scope, claim declaration,
   argument reference, and revision action constraints for follow-up runs.
 """
@@ -88,8 +90,9 @@ Validator-safe ProposalBundle rules:
 PROPOSAL_BUNDLE_SAFETY_OBJECTIVE_CLAUSE = (
     "Proposal safety: use canonical temporal_scope values; declare evidence-backed "
     "claims before arguments; keep argument claim_ids and hypothesis targets in "
-    "contract; supersede actions require supersedes_hypothesis_id; next actions "
-    "must preserve these constraints."
+    "contract; supersede actions may set hypothesis_id to the new challenger but "
+    "must set supersedes_hypothesis_id to the existing hypothesis being replaced; "
+    "next actions must preserve these constraints."
 )
 
 

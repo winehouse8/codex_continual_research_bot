@@ -37,6 +37,9 @@ from codex_continual_research_bot.contracts import (
     RunMode,
     RunReportViewModel,
 )
+from codex_continual_research_bot.failure_analysis import (
+    classify_malformed_proposal_failure,
+)
 from codex_continual_research_bot.graph_canonicalization import (
     CanonicalGraphService,
     CanonicalizationContext,
@@ -69,6 +72,18 @@ def _digest_text(value: str) -> str:
     return f"sha256:{sha256(value.encode('utf-8')).hexdigest()}"
 
 
+def _is_contract_mismatch_malformed_proposal(
+    *,
+    failure_code: FailureCode | None,
+    failure_detail: str | None,
+) -> bool:
+    return (
+        failure_code == FailureCode.MALFORMED_PROPOSAL
+        and classify_malformed_proposal_failure(failure_detail)
+        == "supersede_contract_mismatch"
+    )
+
+
 class WorkerLoopStopReason(str, Enum):
     EMPTY_QUEUE_CONVERGED = "empty_queue_converged"
     EMPTY_QUEUE_PAUSED_ACTIVE_CONFLICTS = "empty_queue_paused_active_conflicts"
@@ -76,6 +91,7 @@ class WorkerLoopStopReason(str, Enum):
     MAX_ITERATIONS = "max_iterations"
     BUDGET_EXHAUSTED = "budget_exhausted"
     REPEATED_MALFORMED_PROPOSAL = "repeated_malformed_proposal"
+    BLOCKED_CONTRACT_MISMATCH = "blocked_contract_mismatch"
     ACTIVE_LOOP_EXISTS = "active_loop_exists"
     STOPPED_BY_OPERATOR = "stopped_by_operator"
     EXECUTOR_ERROR = "executor_error"
@@ -878,17 +894,21 @@ class WorkerLoopService:
                 last_meaningful_change = decision.last_meaningful_change
             else:
                 consecutive_no_yield += 1
-            if result.failure_code == FailureCode.MALFORMED_PROPOSAL or (
-                result.report is not None
-                and result.report.operator_failure_summary is not None
-                and result.report.operator_failure_summary.failure_code
-                == FailureCode.MALFORMED_PROPOSAL
-            ):
+            operator_failure = (
+                None if result.report is None else result.report.operator_failure_summary
+            )
+            effective_failure_code = result.failure_code
+            effective_failure_detail = result.failure_detail
+            if operator_failure is not None:
+                effective_failure_code = operator_failure.failure_code
+                effective_failure_detail = operator_failure.detail
+
+            if effective_failure_code == FailureCode.MALFORMED_PROPOSAL:
                 malformed_streak += 1
             else:
                 malformed_streak = 0
-            if result.failure_detail:
-                last_error = result.failure_detail
+            if effective_failure_detail:
+                last_error = effective_failure_detail
 
             self._ledger.append_worker_loop_iteration(
                 loop_id=loop_id,
@@ -915,6 +935,13 @@ class WorkerLoopService:
 
             if executor_crashed:
                 stop_reason = WorkerLoopStopReason.EXECUTOR_ERROR
+                stop_state = "blocked"
+                break
+            if _is_contract_mismatch_malformed_proposal(
+                failure_code=effective_failure_code,
+                failure_detail=effective_failure_detail,
+            ):
+                stop_reason = WorkerLoopStopReason.BLOCKED_CONTRACT_MISMATCH
                 stop_state = "blocked"
                 break
             if malformed_streak >= policy.max_malformed_proposals:

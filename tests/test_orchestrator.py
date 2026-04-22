@@ -148,6 +148,24 @@ def proposal_data_with_current_best_challenge() -> dict[str, Any]:
     return proposal_data
 
 
+def supersede_proposal_data(
+    *,
+    challenger_id: str,
+    supersedes_hypothesis_id: str,
+) -> dict[str, Any]:
+    proposal_data = proposal_data_with_current_best_challenge()
+    proposal_data["challenger_hypotheses"][0]["hypothesis_id"] = challenger_id
+    proposal_data["revision_proposals"][0].update(
+        {
+            "hypothesis_id": challenger_id,
+            "action": "supersede",
+            "rationale": "A stronger challenger should replace the pressured current best.",
+            "supersedes_hypothesis_id": supersedes_hypothesis_id,
+        }
+    )
+    return proposal_data
+
+
 def insert_raw_topic_snapshot(
     ledger: SQLitePersistenceLedger,
     *,
@@ -832,6 +850,63 @@ def test_unrelated_revision_pressure_rejected(tmp_path: Path) -> None:
     proposal = ProposalBundle.model_validate(proposal_data)
 
     with pytest.raises(CompetitionValidationError, match="reconcile"):
+        orchestrator.validate_proposal_for_competition(
+            intent=intent,
+            proposal=proposal,
+        )
+
+
+@pytest.mark.parametrize(
+    "challenger_id",
+    [
+        "hyp_tool_qualification_ledger_first",
+        "hyp_reliance_classified_agentic_workflow_challenger",
+        "hyp_traceability_ledger_first_challenger",
+    ],
+)
+def test_supersede_challenger_replacing_current_best_counts_as_revision_pressure(
+    tmp_path: Path,
+    challenger_id: str,
+) -> None:
+    ledger = make_ledger(tmp_path)
+    orchestrator = RunOrchestrator(ledger)
+    intent = orchestrator.start_queued_run(
+        queue_item_id="queue_001",
+        run_id="run_001",
+        worker_id="worker-a",
+    )
+    proposal = ProposalBundle.model_validate(
+        supersede_proposal_data(
+            challenger_id=challenger_id,
+            supersedes_hypothesis_id="hyp_001",
+        )
+    )
+
+    orchestrator.validate_proposal_for_competition(
+        intent=intent,
+        proposal=proposal,
+    )
+
+
+def test_supersede_without_attack_frontier_target_is_diagnosed(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    orchestrator = RunOrchestrator(ledger)
+    intent = orchestrator.start_queued_run(
+        queue_item_id="queue_001",
+        run_id="run_001",
+        worker_id="worker-a",
+    )
+    proposal = ProposalBundle.model_validate(
+        supersede_proposal_data(
+            challenger_id="hyp_unrelated_challenger",
+            supersedes_hypothesis_id="hyp_unrelated_previous",
+        )
+    )
+
+    with pytest.raises(
+        CompetitionValidationError,
+        match="supersede proposal must target the attack frontier",
+    ):
         orchestrator.validate_proposal_for_competition(
             intent=intent,
             proposal=proposal,
