@@ -173,6 +173,68 @@
       ]
     },
     {
+      "command_id": "worker.run",
+      "category": "worker",
+      "invocation": "crb worker run --topic <topic-id> [--loop] [--max-iterations <n>] [--json]",
+      "summary": "Run queued research tasks for one topic until a worker loop stop policy or convergence condition fires.",
+      "reads": [
+        "backend.topic_snapshot",
+        "backend.queue_state",
+        "backend.worker_loop_state"
+      ],
+      "state_mutation": "execute_queue",
+      "authority_boundary": "Routes through backend worker loop lease, queue claim, runtime validation, canonical graph persistence, and loop-state ledgers; the CLI does not treat dashboard state as authority.",
+      "output_modes": [
+        "human",
+        "json"
+      ],
+      "json_schema_id": "crb.worker_loop.status.v1",
+      "human_summary_shape": "worker-loop-summary.v1",
+      "examples": [
+        "crb worker run --topic topic_codex_auth_boundary --loop --max-iterations 3 --json"
+      ]
+    },
+    {
+      "command_id": "worker.status",
+      "category": "worker",
+      "invocation": "crb worker status --topic <topic-id> [--json]",
+      "summary": "Show active loop state, iteration count, no-yield streak, stop reason, and yield history for a topic.",
+      "reads": [
+        "backend.worker_loop_state"
+      ],
+      "state_mutation": "none",
+      "authority_boundary": "Reads backend worker loop ledgers; output is an operator view, not source-of-truth mutation.",
+      "output_modes": [
+        "human",
+        "json"
+      ],
+      "json_schema_id": "crb.worker_loop.status.v1",
+      "human_summary_shape": "worker-loop-status.v1",
+      "examples": [
+        "crb worker status --topic topic_codex_auth_boundary --json"
+      ]
+    },
+    {
+      "command_id": "worker.stop",
+      "category": "worker",
+      "invocation": "crb worker stop --topic <topic-id> [--json]",
+      "summary": "Record an operator-visible stop request for the topic worker loop.",
+      "reads": [
+        "backend.worker_loop_state"
+      ],
+      "state_mutation": "stop_worker_loop",
+      "authority_boundary": "Writes only the backend-owned worker loop state row; queue, run, and graph ledgers remain authoritative.",
+      "output_modes": [
+        "human",
+        "json"
+      ],
+      "json_schema_id": "crb.worker_loop.status.v1",
+      "human_summary_shape": "worker-loop-stop.v1",
+      "examples": [
+        "crb worker stop --topic topic_codex_auth_boundary --json"
+      ]
+    },
+    {
       "command_id": "queue.list",
       "category": "queue",
       "invocation": "crb queue list [--topic <topic-id>] [--json]",

@@ -32,6 +32,10 @@ from codex_continual_research_bot.operational import (
     StaleClaimRecoveryRejectedError,
 )
 from codex_continual_research_bot.output_validation import append_proposal_safety_clause
+from codex_continual_research_bot.worker_loop import (
+    WorkerLoopPolicy,
+    WorkerLoopService,
+)
 from codex_continual_research_bot.graph_visualization import (
     build_graph_export_artifact,
     render_graph_artifact,
@@ -541,6 +545,87 @@ class LocalBackendGateway:
                 f"Failure type: {view['failure'].get('failure_type', 'none')}",
                 f"Retryable: {view['failure'].get('retryable', False)}",
                 f"Human review required: {view['failure'].get('human_review_required', False)}",
+            ],
+        }
+
+    def worker_run(
+        self,
+        *,
+        topic_id: str,
+        loop: bool,
+        max_iterations: int,
+        max_consecutive_no_yield: int,
+        max_malformed_proposals: int,
+        max_runtime_seconds: int,
+    ) -> dict[str, object]:
+        ledger = self._initialized_ledger()
+        if ledger.fetch_topic_snapshot(topic_id=topic_id) is None:
+            raise CliBackendError(
+                failure_code="topic_not_found",
+                detail=f"topic {topic_id} does not exist",
+                retryable=False,
+                human_review_required=False,
+            )
+        iterations = max_iterations if loop else 1
+        service = WorkerLoopService(
+            ledger,
+            worker_id="cli-worker-loop",
+            artifacts_root=self.db_path.parent / "worker-artifacts",
+        )
+        result = service.run(
+            topic_id=topic_id,
+            policy=WorkerLoopPolicy(
+                max_iterations=iterations,
+                max_consecutive_no_yield=max_consecutive_no_yield,
+                max_malformed_proposals=max_malformed_proposals,
+                max_runtime_seconds=max_runtime_seconds,
+            ),
+        )
+        status = service.status(topic_id=topic_id)
+        return {
+            "summary": (
+                f"Worker loop for {topic_id} stopped with {result.stop_reason.value}."
+            ),
+            "topic_id": topic_id,
+            "loop_id": result.loop_id,
+            "state": result.state,
+            "stop_reason": result.stop_reason.value,
+            "iteration_count": result.iteration_count,
+            "consecutive_no_yield": result.consecutive_no_yield,
+            "malformed_proposal_streak": result.malformed_proposal_streak,
+            "yielded_count": result.yielded_count,
+            "last_graph_digest": result.last_graph_digest,
+            "status": status,
+            "human": [
+                f"Topic: {topic_id}",
+                f"Loop: {result.loop_id or 'none'}",
+                f"State: {result.state}",
+                f"Stop reason: {result.stop_reason.value}",
+                f"Iterations: {result.iteration_count}",
+                f"Consecutive no-yield: {result.consecutive_no_yield}",
+                f"Yielded iterations: {result.yielded_count}",
+            ],
+        }
+
+    def worker_status(self, *, topic_id: str) -> dict[str, object]:
+        ledger = self._initialized_ledger()
+        return WorkerLoopService(ledger, worker_id="cli-worker-loop").status(
+            topic_id=topic_id
+        )
+
+    def worker_stop(self, *, topic_id: str) -> dict[str, object]:
+        ledger = self._initialized_ledger()
+        stopped = WorkerLoopService(ledger, worker_id="cli-worker-loop").stop(
+            topic_id=topic_id
+        )
+        return {
+            "summary": f"Worker loop stop requested for {topic_id}.",
+            "topic_id": topic_id,
+            "worker_loop": stopped,
+            "human": [
+                f"Topic: {topic_id}",
+                f"State: {stopped.get('state')}",
+                f"Stop reason: {stopped.get('stop_reason')}",
             ],
         }
 

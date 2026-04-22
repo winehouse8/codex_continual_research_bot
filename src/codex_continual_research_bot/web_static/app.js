@@ -87,6 +87,7 @@ function renderOverview(topicPayload) {
   const runState = topicPayload.run_state || {};
   const counts = runState.status_counts || {};
   const runningNow = runState.running_now || {};
+  const workerLoop = runState.worker_loop || topicPayload.worker_loop || {};
   el("topicTitle").textContent = topic.title || topicPayload.topic_id;
   el("topicSummary").textContent = topic.topic_summary || "No topic summary projected.";
   el("snapshotVersion").textContent = `v${topic.snapshot_version || 0}`;
@@ -108,6 +109,13 @@ function renderOverview(topicPayload) {
     runningNow.latest_event?.detail
   )}`;
   el("runningNowGraph").textContent = runningNow.graph_context?.summary || "No graph relation projected.";
+  el("workerLoopState").textContent = `${text(workerLoop.state, "idle")} · iterations=${text(
+    workerLoop.iteration_count,
+    "0"
+  )} · no-yield=${text(workerLoop.consecutive_no_yield, "0")} · stop=${text(
+    workerLoop.stop_reason,
+    "none"
+  )}`;
 
   const hypotheses = el("hypotheses");
   hypotheses.innerHTML = "";

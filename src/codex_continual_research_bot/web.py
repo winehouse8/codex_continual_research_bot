@@ -16,6 +16,7 @@ from urllib.parse import unquote, urlparse
 from codex_continual_research_bot.cli_backend import LocalBackendGateway
 from codex_continual_research_bot.cli_contracts import CliBackendError
 from codex_continual_research_bot.operational import OperationalControlService
+from codex_continual_research_bot.worker_loop import WorkerLoopService
 from codex_continual_research_bot.web_graph_explorer import build_graph_explorer_view
 
 
@@ -91,6 +92,19 @@ class ReadOnlyWebApi:
             "queue": data,
         }
 
+    def worker_loop(self, topic_id: str) -> dict[str, object]:
+        ledger = self._backend._initialized_ledger()
+        status = WorkerLoopService(ledger, worker_id="web-readonly").status(
+            topic_id=topic_id
+        )
+        return {
+            "schema_id": "crb.web.topic.worker_loop.v1",
+            "read_only": True,
+            "authority_notice": READ_ONLY_NOTICE,
+            "topic_id": topic_id,
+            "worker_loop": status,
+        }
+
     def memory(self, topic_id: str) -> dict[str, object]:
         data = self._backend.memory_snapshot(topic_id=topic_id)
         return {
@@ -119,6 +133,7 @@ class ReadOnlyWebApi:
         queue = self.queue(topic_id)["queue"]
         memory = self.memory(topic_id)["memory"]
         graph = self.graph(topic_id)["graph"]
+        worker_loop = self.worker_loop(topic_id)["worker_loop"]
         return {
             "schema_id": "crb.web.topic.dashboard.v1",
             "read_only": True,
@@ -130,11 +145,13 @@ class ReadOnlyWebApi:
             "queue": queue,
             "memory": memory,
             "graph": graph,
+            "worker_loop": worker_loop,
             "run_state": self._run_state_view(
                 topic_id=topic_id,
                 timeline_items=runs["timeline_items"],
                 queue=queue,
                 graph=graph,
+                worker_loop=worker_loop,
             ),
         }
 
@@ -196,6 +213,7 @@ class ReadOnlyWebApi:
         timeline_items: list[dict[str, Any]],
         queue: dict[str, Any],
         graph: dict[str, Any],
+        worker_loop: dict[str, Any],
     ) -> dict[str, object]:
         items = list(queue.get("items", []))
         counts = {
@@ -228,6 +246,16 @@ class ReadOnlyWebApi:
         return {
             "schema_id": "crb.web.run_state.v1",
             "topic_id": topic_id,
+            "worker_loop": {
+                "state": worker_loop.get("state", "idle"),
+                "active": worker_loop.get("active", False),
+                "iteration_count": worker_loop.get("iteration_count", 0),
+                "consecutive_no_yield": worker_loop.get("consecutive_no_yield", 0),
+                "stop_reason": worker_loop.get("stop_reason"),
+                "last_meaningful_graph_change": worker_loop.get(
+                    "last_meaningful_graph_change"
+                ),
+            },
             "status_counts": {
                 **counts,
                 "total": len(items),
@@ -553,6 +581,8 @@ class LocalWebRequestHandler(BaseHTTPRequestHandler):
             return self._api.runs(topic_id)
         if suffix == ["queue"]:
             return self._api.queue(topic_id)
+        if suffix == ["worker-loop"]:
+            return self._api.worker_loop(topic_id)
         if suffix == ["memory"]:
             return self._api.memory(topic_id)
         if suffix == ["graph"]:

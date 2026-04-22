@@ -347,6 +347,10 @@ def test_web_server_routes_smoke(tmp_path: Path) -> None:
         queue = fetch_json(server.base_url, "/api/topics/topic_codex_auth_boundary/queue")
         memory = fetch_json(server.base_url, "/api/topics/topic_codex_auth_boundary/memory")
         graph = fetch_json(server.base_url, "/api/topics/topic_codex_auth_boundary/graph/latest")
+        worker_loop = fetch_json(
+            server.base_url,
+            "/api/topics/topic_codex_auth_boundary/worker-loop",
+        )
 
     assert "Research Dashboard" in html
     assert topics["schema_id"] == "crb.web.topics.v1"
@@ -356,6 +360,7 @@ def test_web_server_routes_smoke(tmp_path: Path) -> None:
     assert memory["schema_id"] == "crb.web.topic.memory.v1"
     assert graph["schema_id"] == "crb.web.topic.graph.v1"
     assert graph["graph"]["scope"] == "latest"
+    assert worker_loop["schema_id"] == "crb.web.topic.worker_loop.v1"
 
 
 def test_web_api_json_response_schema(tmp_path: Path) -> None:
@@ -382,7 +387,7 @@ def test_web_api_json_response_schema(tmp_path: Path) -> None:
     }
     assert dashboard["schema_id"] == "crb.web.topic.dashboard.v1"
     assert dashboard["read_only"] is True
-    assert {"topic", "runs", "queue", "memory", "graph"} <= set(dashboard)
+    assert {"topic", "runs", "queue", "memory", "graph", "worker_loop"} <= set(dashboard)
     assert history["graph"]["scope"] == "history"
     assert history["graph"]["renderer"]["kind"] == "local_svg_graph_renderer"
 
@@ -398,6 +403,7 @@ def test_web_dashboard_run_state_view_model_links_queue_run_and_graph(tmp_path: 
 
     run_state = dashboard["run_state"]
     assert run_state["schema_id"] == "crb.web.run_state.v1"
+    assert run_state["worker_loop"]["state"] == "idle"
     assert run_state["status_counts"] == {
         "running": 1,
         "queued": 1,
@@ -491,6 +497,7 @@ def test_html_shell_smoke(tmp_path: Path) -> None:
     assert 'id="queueList"' in html
     assert 'id="memoryList"' in html
     assert 'id="runningNowCard"' in html
+    assert 'id="workerLoopState"' in html
     assert 'id="deadLetterCount"' in html
     assert 'id="staleCount"' in html
     assert ".graph-canvas" in css

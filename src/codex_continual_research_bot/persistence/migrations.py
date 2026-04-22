@@ -31,6 +31,10 @@ MIGRATIONS = [
         version="0005_phase11_operational_controls",
         filename="migrations/0005_phase11_operational_controls.sql",
     ),
+    Migration(
+        version="0006_phase21_worker_loop_state",
+        filename="migrations/0006_phase21_worker_loop_state.sql",
+    ),
 ]
 
 
