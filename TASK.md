@@ -1106,6 +1106,74 @@ Exit gate:
 - graph tab에서 현재 우세 가설, challenger, evidence/provenance, 관련 run/queue context를 확인할 수 있어야 한다.
 - Playwright E2E와 screenshot 검증이 통과해야 한다.
 
+
+## Phase 21. Autonomous Research Worker Loop And Convergence Stop
+
+목적:
+사용자가 한 번 명령을 내리면 특정 topic의 queued research tasks를 자동으로 하나씩 실행하고, 유의미한 수확이 없거나 충분히 수렴하면 안전하게 멈추는 research worker loop를 구현한다.
+
+Includes:
+
+- `crb worker run --topic <topic_id> --loop` 또는 동등한 CLI
+- `crb worker status --topic <topic_id>` 상태 조회
+- topic당 단일 active worker loop lease / heartbeat
+- queue item claim -> Codex runtime execution -> ProposalBundle validation -> canonical graph/memory update -> next queue 반복
+- iteration별 yield 판정
+- consecutive no-yield stop
+- max iterations / budget / empty queue / repeated malformed proposal stop
+- stop reason과 yield history persistence
+- Web UI에서 active loop, iteration count, no-yield streak, stop reason 표시
+
+Artifacts:
+
+- worker loop service
+- convergence / yield analysis module
+- CLI commands and JSON contracts
+- loop state persistence migration
+- Web API/view model update
+- README usage section
+- tests and screenshot artifacts
+
+Depends on:
+
+- Phase 4
+- Phase 5
+- Phase 7
+- Phase 9
+- Phase 11
+- Phase 13
+- Phase 20
+
+Required tests:
+
+- unit: yielded iteration when graph digest or meaningful graph counts change
+- unit: no-yield when run quarantines or graph is unchanged
+- unit: convergence policy stops at `max_consecutive_no_yield`
+- unit: convergence policy stops at `max_iterations` and budget thresholds
+- integration: fake runtime yields once then no-yields until loop stops
+- integration: repeated malformed proposal stops without infinite retry
+- integration: empty queue with no active conflicts stops as converged/paused
+- CLI JSON tests for worker run/status/stop
+- Web API/view-model tests for loop state
+- Playwright screenshot for running loop and stopped/converged loop states
+
+Failure modes:
+
+- worker consumes Codex tokens indefinitely without meaningful graph updates
+- queued count is mistaken for active worker count
+- malformed proposals are retried forever
+- multiple workers run the same topic concurrently and corrupt queue/run state
+- loop stops silently without operator-visible reason
+- convergence is claimed merely because queue is empty while unresolved conflicts remain
+- Git/Linear implementation orchestrator is confused with CRB research worker runtime
+
+Exit gate:
+
+- 실제 sample topic 또는 fixture topic에서 worker loop를 실행해 at least one successful yielded iteration과 one no-yield/convergence stop path를 검증해야 한다.
+- CLI와 Web UI에서 running / queued / stopped / converged / blocked를 구분할 수 있어야 한다.
+- stop reason, iteration count, consecutive no-yield, last meaningful graph change가 backend ledger와 UI에 남아야 한다.
+- loop가 멈춘 뒤 다시 시작해도 idempotency와 queue claim safety가 유지되어야 한다.
+
 ## 6. Cross-Phase Dependency Summary
 
 권장 구현 순서:
@@ -1131,6 +1199,7 @@ Exit gate:
 19. Phase 18: interactive graph explorer / visual research UX
 20. Phase 19: web UX final audit / first research demo
 21. Phase 20: visual run-state dashboard / Playwright UX verification
+22. Phase 21: autonomous research worker loop / convergence stop
 
 이 순서를 바꾸면 생기는 대표 리스크:
 
@@ -1162,3 +1231,4 @@ Exit gate:
 - CLI/visualization이 backend authority를 우회하거나 source-of-truth처럼 오해될 수 있음
 - localhost web UI가 conflict/dead-letter/stale-claim 상태를 숨겨 운영자가 연구가 잘 되고 있다고 오해함
 - Web UI가 총 queue 수와 현재 실행 중 작업 수를 구분하지 못해 병렬 실행 상태를 오해하게 만듦
+- Research worker loop가 no-yield / convergence / budget / human-review-required stop 조건 없이 Codex runtime을 계속 소비함
