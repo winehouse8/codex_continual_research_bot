@@ -5,7 +5,9 @@
     "memory": "artifacts/playwright/memory.png",
     "overview": "artifacts/playwright/overview.png",
     "queue": "artifacts/playwright/queue.png",
-    "runs": "artifacts/playwright/runs.png"
+    "runs": "artifacts/playwright/runs.png",
+    "worker_loop_converged": "artifacts/playwright/worker-loop-converged.png",
+    "worker_loop_running": "artifacts/playwright/worker-loop-running.png"
   },
   "topic_id": "topic_codex_auth_boundary"
 }
