@@ -19,6 +19,7 @@ from codex_continual_research_bot.contracts import (
 from codex_continual_research_bot.persistence import SQLitePersistenceLedger
 from codex_continual_research_bot.worker_loop import (
     GraphChangeSummary,
+    LocalProposalRunExecutor,
     LoopExecutionResult,
     WorkerLoopPolicy,
     WorkerLoopService,
@@ -248,6 +249,20 @@ class SlowLoopExecutor(FakeLoopExecutor):
         assert self.clock is not None
         self.clock.advance(self.elapsed_per_item)
         return result
+
+
+@dataclass
+class CrashingLoopExecutor:
+    executor_kind: str = "crashing-test"
+
+    def execute_item(
+        self,
+        *,
+        queue_item_id: str,
+        run_id: str,
+        worker_id: str,
+    ) -> LoopExecutionResult:
+        raise RuntimeError(f"synthetic executor crash for {queue_item_id}")
 
 
 def test_yielded_iteration_when_graph_digest_changes() -> None:
@@ -484,3 +499,80 @@ def test_single_active_worker_loop_lease_blocks_second_loop(tmp_path: Path) -> N
 
     assert result.stop_reason == WorkerLoopStopReason.ACTIVE_LOOP_EXISTS
     assert result.state == "blocked"
+
+
+def test_duplicate_interactive_report_is_idempotent_no_yield_not_crash(
+    tmp_path: Path,
+) -> None:
+    ledger = make_ledger(tmp_path, job_count=1)
+    claimed = ledger.claim_queue_item_for_run(
+        queue_item_id="queue_001",
+        worker_id="seed-worker",
+        run_id="run_001",
+        mode="scheduled",
+        now=NOW,
+    )
+    assert claimed is not None
+    ledger.record_interactive_run_failure(
+        report(
+            run_id="run_001",
+            queue_item_id="queue_001",
+            graph_digest="sha256:existing",
+            node_count=1,
+            edge_count=0,
+        )
+    )
+    with ledger.connect() as connection, connection:
+        connection.execute(
+            """
+            UPDATE queue_items
+            SET state = ?, claimed_by = NULL, claimed_at = NULL, available_at = ?
+            WHERE id = ?
+            """,
+            (QueueJobState.QUEUED.value, "2000-01-01T00:00:00+00:00", "queue_001"),
+        )
+
+    result = WorkerLoopService(
+        ledger,
+        executor=LocalProposalRunExecutor(
+            ledger,
+            artifacts_root=tmp_path / "artifacts",
+        ),
+    ).run(
+        topic_id="topic_001",
+        policy=WorkerLoopPolicy(max_iterations=1, max_consecutive_no_yield=1),
+        now=NOW,
+    )
+    status = WorkerLoopService(ledger).status(topic_id="topic_001")
+    queue = ledger.fetch_queue_item("queue_001")
+
+    assert result.stop_reason == WorkerLoopStopReason.MAX_CONSECUTIVE_NO_YIELD
+    assert result.state == "converged"
+    assert result.iteration_count == 1
+    assert result.last_error is None
+    assert status["last_error"] is None
+    assert queue is not None
+    assert queue["state"] == QueueJobState.COMPLETED.value
+
+
+def test_executor_exception_becomes_operator_visible_blocked_loop(
+    tmp_path: Path,
+) -> None:
+    ledger = make_ledger(tmp_path, job_count=1)
+
+    result = WorkerLoopService(ledger, executor=CrashingLoopExecutor()).run(
+        topic_id="topic_001",
+        policy=WorkerLoopPolicy(max_iterations=2),
+        now=NOW,
+    )
+    status = WorkerLoopService(ledger).status(topic_id="topic_001")
+    queue = ledger.fetch_queue_item("queue_001")
+
+    assert result.stop_reason == WorkerLoopStopReason.EXECUTOR_ERROR
+    assert result.state == "blocked"
+    assert result.last_error is not None
+    assert "synthetic executor crash" in result.last_error
+    assert status["executor_kind"] == "crashing-test"
+    assert status["last_error"] == result.last_error
+    assert queue is not None
+    assert queue["state"] == QueueJobState.DEAD_LETTER.value

@@ -112,6 +112,9 @@ function renderOverview(topicPayload) {
   el("workerLoopState").textContent = `${text(workerLoop.state, "idle")} · iterations=${text(
     workerLoop.iteration_count,
     "0"
+  )} · executor=${text(workerLoop.executor_kind, "none")} · last-error=${text(
+    workerLoop.last_error,
+    "none"
   )} · no-yield=${text(workerLoop.consecutive_no_yield, "0")} · stop=${text(
     workerLoop.stop_reason,
     "none"

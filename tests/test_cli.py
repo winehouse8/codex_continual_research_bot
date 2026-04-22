@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import shlex
 from datetime import datetime, timezone
 from io import StringIO
@@ -504,6 +505,8 @@ def test_worker_run_status_stop_json_flow(tmp_path: Path) -> None:
             "--topic",
             "topic_codex_auth_boundary",
             "--loop",
+            "--executor",
+            "fixture",
             "--max-iterations",
             "2",
             "--json",
@@ -559,6 +562,150 @@ def test_worker_run_status_stop_json_flow(tmp_path: Path) -> None:
     status_after_stop = parsed_json(output)
     assert code == 0
     assert status_after_stop.data["stop_reason"] == status.data["stop_reason"]
+
+
+def test_worker_run_default_executor_invokes_codex_runtime(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    payload = {
+        "summary_draft": "Fake codex runtime produced a challenger.",
+        "evidence_candidates": [
+            {
+                "artifact_id": "artifact_codex_fake",
+                "kind": "internal_note",
+                "source_url": "internal://codex/fake-worker-loop",
+                "title": "Fake codex invocation evidence",
+                "accessed_at": "2026-04-22T12:00:00Z",
+                "extraction_note": "Test codex binary wrote a valid proposal artifact.",
+            }
+        ],
+        "claims": [
+            {
+                "claim_id": "claim_codex_fake",
+                "text": "As of 2026-04-22, the worker loop reached codex exec.",
+                "artifact_ids": ["artifact_codex_fake"],
+                "temporal_scope": "as of 2026-04-22",
+            }
+        ],
+        "arguments": [
+            {
+                "argument_id": "arg_codex_fake_support",
+                "stance": "support",
+                "target_hypothesis_id": "hyp_codex_auth_boundary_current_best",
+                "claim_ids": ["claim_codex_fake"],
+                "rationale": "The invocation artifact proves the codex-backed path ran.",
+            },
+            {
+                "argument_id": "arg_codex_fake_challenge",
+                "stance": "challenge",
+                "target_hypothesis_id": "hyp_codex_auth_boundary_current_best",
+                "claim_ids": ["claim_codex_fake"],
+                "rationale": "The run still generates challenger pressure.",
+            },
+        ],
+        "challenger_hypotheses": [
+            {
+                "hypothesis_id": "challenger_codex_fake",
+                "title": "Codex-backed worker loop challenger",
+                "statement": "The default worker path should be a real runtime invocation.",
+                "status": "proposed",
+            }
+        ],
+        "conflict_assessments": [
+            {
+                "conflict_id": "conf_codex_fake",
+                "status": "escalated",
+                "summary": "The test keeps worker executor selection visible.",
+            }
+        ],
+        "revision_proposals": [
+            {
+                "hypothesis_id": "hyp_codex_auth_boundary_current_best",
+                "action": "weaken",
+                "rationale": "The challenger keeps competition pressure explicit.",
+            }
+        ],
+        "next_actions": [
+            {
+                "action_id": "next_codex_fake",
+                "kind": "attack_current_best",
+                "description": "Continue with a non-fixture codex-backed run.",
+            }
+        ],
+        "execution_meta": {
+            "turn_count": 1,
+            "tool_call_count": 0,
+            "compactions": 0,
+            "repair_attempts": 0,
+        },
+    }
+    fake_codex = bin_dir / "codex"
+    fake_codex.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env python3",
+                "import json, sys",
+                "output_path = sys.argv[sys.argv.index('-o') + 1]",
+                "print(json.dumps({'type': 'thread.started'}), flush=True)",
+                f"payload = {payload!r}",
+                "open(output_path, 'w', encoding='utf-8').write(json.dumps(payload))",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.chdir(tmp_path)
+
+    backend = LocalBackendGateway(db_path=tmp_path / "crb.sqlite3", workspace_root=tmp_path)
+    run_cli(["init"], backend)
+    run_cli(
+        [
+            "topic",
+            "create",
+            "Codex auth boundary",
+            "--objective",
+            "Track session ownership risk",
+        ],
+        backend,
+    )
+    run_cli(
+        [
+            "run",
+            "start",
+            "topic_codex_auth_boundary",
+            "--input",
+            "counterargument: verify default worker executor",
+        ],
+        backend,
+    )
+
+    code, output, _ = run_cli(
+        [
+            "worker",
+            "run",
+            "--topic",
+            "topic_codex_auth_boundary",
+            "--max-iterations",
+            "1",
+            "--json",
+        ],
+        backend,
+    )
+    result = parsed_json(output)
+
+    assert code == 0
+    assert result.data["executor_kind"] == "codex"
+    assert result.data["iteration_count"] == 1
+    assert result.data["last_error"] is None
+    invocation_files = list((tmp_path / "worker-artifacts").glob("run_*/attempt_001/invocation.json"))
+    assert invocation_files
+    invocation = json.loads(invocation_files[0].read_text(encoding="utf-8"))
+    assert invocation["command"][:2] == ["codex", "exec"]
 
 
 def test_queue_dead_letter_retry_flow_shows_failure_classification(tmp_path: Path) -> None:

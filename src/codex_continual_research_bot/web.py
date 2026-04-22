@@ -249,9 +249,11 @@ class ReadOnlyWebApi:
             "worker_loop": {
                 "state": worker_loop.get("state", "idle"),
                 "active": worker_loop.get("active", False),
+                "executor_kind": worker_loop.get("executor_kind"),
                 "iteration_count": worker_loop.get("iteration_count", 0),
                 "consecutive_no_yield": worker_loop.get("consecutive_no_yield", 0),
                 "stop_reason": worker_loop.get("stop_reason"),
+                "last_error": worker_loop.get("last_error"),
                 "last_meaningful_graph_change": worker_loop.get(
                     "last_meaningful_graph_change"
                 ),

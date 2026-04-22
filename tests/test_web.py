@@ -404,6 +404,8 @@ def test_web_dashboard_run_state_view_model_links_queue_run_and_graph(tmp_path: 
     run_state = dashboard["run_state"]
     assert run_state["schema_id"] == "crb.web.run_state.v1"
     assert run_state["worker_loop"]["state"] == "idle"
+    assert "executor_kind" in run_state["worker_loop"]
+    assert "last_error" in run_state["worker_loop"]
     assert run_state["status_counts"] == {
         "running": 1,
         "queued": 1,
